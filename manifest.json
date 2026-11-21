@@ -1,0 +1,19 @@
+{
+  "name": "KochTresor – Gemeinsame Rezepte & Koch-App",
+  "short_name": "KochTresor",
+  "description": "Rezepte von Instagram, Facebook & Webseiten offline speichern, synchronisieren, Wochenplan & Bring! Einkaufsliste.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#ea580c",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='120' fill='%23ea580c'/%3E%3Cpath d='M256 112c-52 0-94 38-98 87-28 6-48 31-48 61 0 34 28 62 62 62h168c34 0 62-28 62-62 0-30-20-55-48-61-4-49-46-87-98-87zm-84 242v46c0 15 13 28 28 28h112c15 0 28-13 28-28v-46H172z' fill='%23fff'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+

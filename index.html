@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1120" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="KochTresor" />
+  <title>KochTresor – Gemeinsame Rezepte & Koch-App</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="stylesheet" href="./styles.css?v=43" />
+</head>
+<body>
+  <div id="toast" class="toast">Gespeichert!</div>
+
+  <div class="app-shell">
+    <!-- Top Smartphone Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo">🍲</div>
+        <div class="brand-text">
+          <div class="brand-title">KochTresor</div>
+          <div class="brand-sub">
+            <span id="statusDot" class="status-dot"></span>
+            <span id="statusText" class="brand-status-text">Synchronisiert</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="pill-btn header-pill-btn" onclick="openKitchenToolsModal()" title="Küchen-Tools, Backform- & Airfryer-Rechner">
+          <span>🧮</span><span>Tools</span>
+        </button>
+        <button class="pill-btn header-pill-btn" onclick="downloadStandaloneAppFile()" title="App direkt als Datei herunterladen">
+          <span>📲</span><span>App</span>
+        </button>
+        <button class="pill-btn header-pill-btn" onclick="pullHouseholdCloudState(true)" title="Jetzt synchronisieren">
+          <span>🔄</span><span>Sync</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Pull-to-Refresh Anzeige (von oben nach unten ziehen) -->
+    <div id="pullToRefreshBar" class="ptr-indicator">↓ Zum Synchronisieren ziehen...</div>
+
+    <!-- Scrollable Main Content -->
+    <main class="app-content">
+      <!-- TAB 1: REZEPTE & KÜHLSCHRANK-SUCHE (Clean-Dark 2-Spalten-Raster) -->
+      <section id="tab-recipes" class="tab-view active">
+        <!-- Heute im Wochenplan Schnell-Banner -->
+        <div id="todayPlanQuickBanner" style="display:none;"></div>
+
+        <!-- Aufgeräumte Such- & Aktionsleiste -->
+        <div class="search-box" style="display:flex; gap:6px; margin-bottom:8px;">
+          <div style="position:relative; flex:1;">
+            <span class="search-icon">🔍</span>
+            <input
+              id="homeSearchInput"
+              type="text"
+              class="search-input"
+              placeholder="Rezept oder Zutat suchen..."
+              oninput="state.searchQuery = this.value; renderRecipes()"
+              onkeydown="if(event.key==='Enter' && this.value.trim()) searchOnlineFromHome()"
+            />
+          </div>
+          <button
+            id="toggleFridgeBarBtn"
+            class="pill-btn"
+            style="border-radius:12px; padding:0 10px; font-weight:700; border-color:rgba(59,130,246,0.45); color:#93c5fd;"
+            onclick="toggleFridgeFilterBar()"
+            title="Was ist im Kühlschrank? Zutaten-Filter ein-/ausblenden"
+          >
+            🧊 Vorrat
+          </button>
+          <button
+            id="toggleDiscoveryBtn"
+            class="pill-btn"
+            style="border-radius:12px; padding:0 10px; font-weight:700; border-color:rgba(234,88,12,0.45); color:#fdba74;"
+            onclick="toggleHomeDiscoveryCollapsed()"
+            title="Was kochen wir heute? & Spar-Ideen ein-/ausblenden"
+          >
+            🎲 Idee
+          </button>
+          <button class="pill-btn" style="background:var(--primary); color:#fff; border:none; border-radius:12px; padding:0 11px; font-weight:700;" onclick="searchOnlineFromHome()" title="Online nach neuen Rezepten suchen">
+            🔎 Online
+          </button>
+        </div>
+
+        <!-- Einklappbare Kühlschrank-Zutaten-Leiste (standardmäßig eingeklappt für maximale Übersicht) -->
+        <div id="fridgeBarContainer" class="fridge-bar" style="display:none; margin-bottom:8px;">
+          <span>🧊</span>
+          <input
+            id="fridgeQueryInput"
+            type="text"
+            placeholder="Was ist im Kühlschrank? (z.B. Kartoffeln, Hack)"
+            oninput="state.fridgeQuery = this.value; renderRecipes()"
+          />
+          <button
+            id="aiFridgeBtn"
+            type="button"
+            class="pill-btn"
+            style="font-size:10.5px; padding:4px 8px; background:rgba(16,185,129,0.2); border-color:rgba(16,185,129,0.5); color:#6ee7b7; white-space:nowrap;"
+            onclick="generateFridgeRecipeWithAI()"
+            title="Aus diesen Zutaten per Groq-KI ein komplettes Rezept erstellen"
+          >
+            ✨ KI-Rezept
+          </button>
+          <button
+            type="button"
+            class="pill-btn"
+            style="font-size:10px; padding:3px 7px;"
+            onclick="const inp=document.getElementById('fridgeQueryInput'); if(inp){inp.value='';} state.fridgeQuery=''; renderRecipes();"
+            title="Filter zurücksetzen"
+          >
+            ✕
+          </button>
+        </div>
+        <div id="aiFridgeResultBox" style="display:none; margin-bottom:8px;"></div>
+
+        <!-- Einklappbare Koch-Ideen & Spar-Rezepte Sektion -->
+        <div id="homeDiscoverySection" class="category-section" style="display:none; margin-bottom:10px;"></div>
+
+        <!-- Kategorien + Ansichts-Umschalter (2-Spalten-Kacheln als übersichtlicher Standard) -->
+        <div class="chip-row-wrapper" style="margin-bottom:10px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:6px;">
+            <span style="font-size:11px; font-weight:800; color:var(--text-muted); letter-spacing:0.3px;">📂 KATEGORIEN</span>
+            <div class="view-mode-switcher" id="recipeViewModeSwitcher">
+              <button class="view-mode-btn active" data-vmode="grid" onclick="setRecipeViewMode('grid')" title="Übersichtliches 2-Spalten-Raster">🔲 Kacheln</button>
+              <button class="view-mode-btn" data-vmode="carousel" onclick="setRecipeViewMode('carousel')" title="Horizontal scrollbare Kategorie-Karussells">🗂️ Karussell</button>
+              <button class="view-mode-btn" data-vmode="list" onclick="setRecipeViewMode('list')" title="Platzsparende Schnell-Liste">📋 Liste</button>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button class="carousel-nav-btn" onclick="scrollCategoryChipRow(-160)" title="Kategorien nach links">‹</button>
+            <div id="categoryChips" class="chip-row" style="flex:1; margin-bottom:0;"></div>
+            <button class="carousel-nav-btn" onclick="scrollCategoryChipRow(160)" title="Kategorien nach rechts">›</button>
+          </div>
+        </div>
+
+        <div id="recipeList"></div>
+
+        <div style="margin-top:18px;">
+          <div class="category-group-header">
+            <div class="category-group-title">
+              <span>✨</span>
+              <span>Weitere Original-Gerichte (1:1)</span>
+            </div>
+            <div class="category-header-right">
+              <button class="carousel-nav-btn" onclick="scrollRecipeCarousel('suggestedRecipesHome', -260)" title="Nach links">‹</button>
+              <button class="carousel-nav-btn" onclick="scrollRecipeCarousel('suggestedRecipesHome', 260)" title="Nach rechts">›</button>
+            </div>
+          </div>
+          <div id="suggestedRecipesHome" class="recipe-carousel"></div>
+        </div>
+      </section>
+
+      <!-- TAB 2: ENTDECKEN & IMPORT-ZENTRALE (ÜBERSICHTLICH MIT SUB-NAVIGATION) -->
+      <section id="tab-import" class="tab-view">
+        <!-- Kompakte KI-Import Status- & Schnell-Einrichtungsleiste (100% Netlify Drag & Drop kompatibel) -->
+        <div id="aiKeyStatusBar" class="location-validity-bar" style="margin-bottom:10px;">
+          <button type="button" class="location-pill-btn" onclick="toggleAiKeySetupBox()" title="Google Gemini KI-Key für Universal-Import & Foto-Scanner einrichten">
+            <span id="aiKeyStatusIcon">✨</span>
+            <span id="aiKeyStatusText">KI-Erkennung einrichten (Alle Seiten & Fotos)</span>
+            <span style="opacity:0.75; font-size:10px;">▼</span>
+          </button>
+          <span id="aiKeyBadge" class="validity-pill valid-upcoming">Optional · Kostenlos</span>
+        </div>
+
+        <div id="aiKeyQuickSetupBox" class="section-card" style="display:none; border-color:rgba(16,185,129,0.45); background:rgba(15,23,42,0.96); margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-size:13px; font-weight:800; color:#6ee7b7;">✨ Kostenlose KI-Erkennung (100 % Privatnutzung)</span>
+            <button type="button" class="pill-btn" style="font-size:11px; padding:3px 8px;" onclick="toggleAiKeySetupBox()">✕</button>
+          </div>
+          <div class="section-desc" style="margin-bottom:8px;">
+            Für die <strong>private Nutzung</strong> (ohne Geschäfts-Bestätigung &amp; ohne Kreditkarte) empfehlen wir <strong>Groq</strong> (kostenlos, extrem schnell, liest <strong>alle Webseiten &amp; Rezept-Fotos</strong>). Alternativ funktionieren auch <strong>OpenRouter</strong> oder <strong>Google Gemini</strong> – die App erkennt den Key automatisch!
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+            <a href="https://console.groq.com/keys" target="_blank" rel="noopener" class="pill-btn" style="display:inline-flex; text-decoration:none; background:rgba(16,185,129,0.18); border-color:rgba(16,185,129,0.5); color:#6ee7b7; font-size:11.5px; font-weight:700;">
+              🔑 1. Kostenlosen Groq-Key holen (Privat · Empfohlen) ↗
+            </a>
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noopener" class="pill-btn" style="display:inline-flex; text-decoration:none; background:rgba(59,130,246,0.18); border-color:rgba(59,130,246,0.45); color:#93c5fd; font-size:11.5px;">
+              🔑 Alternative: OpenRouter-Key (Privat) ↗
+            </a>
+          </div>
+          <div class="btn-row" style="gap:6px; margin-bottom:6px;">
+            <input id="quickGeminiKeyInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" class="text-input masked-key-input" placeholder="Primärer KI-Key: AIza... (Gemini) oder gsk_... (Groq)" style="flex:1;" />
+            <button type="button" class="btn btn-primary" style="width:auto; padding:0 14px; white-space:nowrap;" onclick="saveAndTestQuickGeminiKey()">
+              💾 Speichern &amp; Testen
+            </button>
+          </div>
+          <div class="input-group" style="margin-bottom:4px;">
+            <input id="quickBackupAiKeyInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" class="text-input masked-key-input" style="padding:7px 10px; font-size:12px;" placeholder="Optionaler Backup-KI-Key (z.B. Groq gsk_... falls Gemini Limit erreicht)" />
+          </div>
+          <div id="quickGeminiTestResult" style="font-size:11.5px; margin-top:6px; color:var(--text-muted);"></div>
+        </div>
+
+        <div id="importStatusBox" class="section-card" style="display:none; background:rgba(234,88,12,0.18); border-color:var(--primary); font-weight:700; font-size:13px;"></div>
+
+        <!-- Übersichtliche Sub-Navigation im Import-Tab (Kein endloses Scrollen mehr!) -->
+        <div id="importSubTabBar" class="sub-seg-bar">
+          <button class="sub-seg-btn active" data-itab="web" onclick="setImportSubTab('web')">🌐 Link & Suche</button>
+          <button class="sub-seg-btn" data-itab="photo" onclick="setImportSubTab('photo')">📷 Foto-Scan</button>
+          <button class="sub-seg-btn" data-itab="manual" onclick="setImportSubTab('manual')">✍️ Eigenes</button>
+          <button class="sub-seg-btn" data-itab="video" onclick="setImportSubTab('video')">📸 Video</button>
+          <button class="sub-seg-btn" data-itab="all" onclick="setImportSubTab('all')">📋 Alle</button>
+        </div>
+
+        <!-- 1. Universal Rezept-Downloader (Webseiten, Instagram, Facebook, TikTok & Co.) -->
+        <div class="section-card" data-import-group="web">
+          <div class="section-title">🌐 Rezept 1:1 per Link importieren (Alle Seiten & Social Media)</div>
+          <div class="section-desc">
+            Übernimmt Original-Zutaten, Beschreibung &amp; Zubereitung von Webseiten, Blogs, Instagram &amp; Facebook:
+          </div>
+          <div class="input-group">
+            <input id="webImportUrl" type="text" class="text-input" placeholder="Link einfügen: Webseite, Leckerschmecker, Chefkoch, Instagram Reel, Facebook..." onkeydown="if(event.key==='Enter') importFromWebsiteUrl()" />
+          </div>
+          <button class="btn btn-accent" onclick="importFromWebsiteUrl()">
+            🌐 1:1 Rezept importieren & offline sichern
+          </button>
+        </div>
+
+        <!-- 1b. Lesezeichen- & Mehrfach-Link-Import (ohne Duplikate!) -->
+        <div class="section-card" data-import-group="web" style="padding:11px 13px;">
+          <details id="bookmarkImportDetails">
+            <summary style="cursor:pointer; font-size:13.5px; font-weight:800; color:#93c5fd; list-style:none; display:flex; justify-content:space-between; align-items:center;">
+              <span>🔖 Lesezeichen / Mehrere Rezept-Links importieren</span>
+              <span style="font-size:11px; color:var(--text-muted);">▼</span>
+            </summary>
+            <div style="margin-top:9px;">
+              <div class="section-desc" style="margin-bottom:8px;">
+                Importiere deine Browser-Lesezeichen (<code>.html</code>-Export aus Chrome/Safari/Firefox) oder füge mehrere Rezept-Links (1 pro Zeile) ein. <strong>Doppelte Rezepte werden automatisch übersprungen!</strong>
+              </div>
+              <div class="input-group" style="margin-bottom:8px;">
+                <label class="input-label">📂 Lesezeichen-Datei auswählen (.html oder .txt)</label>
+                <input id="bookmarkFileInput" type="file" accept=".html,.htm,.txt" class="text-input" style="padding:7px;" onchange="handleBookmarkFileSelect(event)" />
+              </div>
+              <div class="input-group" style="margin-bottom:8px;">
+                <label class="input-label">🔗 Oder mehrere Rezept-Links einfügen (1 pro Zeile)</label>
+                <textarea id="bookmarkLinksTextarea" class="textarea-input" style="min-height:74px;" placeholder="https://www.chefkoch.de/rezepte/...&#10;https://www.lecker.de/..."></textarea>
+              </div>
+              <button type="button" class="btn btn-secondary" style="margin-bottom:8px;" onclick="previewPastedBookmarkLinks()">
+                🔍 Links prüfen &amp; Duplikate filtern
+              </button>
+              <div id="bookmarkPreviewBox" style="display:none;"></div>
+            </div>
+          </details>
+        </div>
+
+        <!-- DIREKTE IN-APP LIVE-SUCHE (Chefkoch, Foodblogs, Instagram Reels, Facebook) -->
+        <div class="section-card" data-import-group="web" style="border-color:rgba(234,88,12,0.4); background:linear-gradient(180deg, rgba(234,88,12,0.12), rgba(23,32,51,0.95));">
+          <div class="section-title">🔎 Rezepte direkt in der App suchen & finden</div>
+          <div class="section-desc">
+            Durchsuche live <strong>Chefkoch</strong>, <strong>Foodblogs</strong>, <strong>Instagram Reels</strong> & <strong>Facebook</strong> und übernimm gefundene Rezepte mit 1 Klick 1:1 in deine App:
+          </div>
+          <div class="btn-row" style="margin-bottom:9px;">
+            <input
+              id="liveSearchInput"
+              type="text"
+              class="text-input"
+              placeholder="z.B. Gulasch, Käsekuchen, Kürbis Pasta..."
+              onkeydown="if(event.key==='Enter') executeLiveRecipeSearch()"
+            />
+            <button class="btn btn-primary" style="width:auto; padding:0 16px; white-space:nowrap;" onclick="executeLiveRecipeSearch()">
+              🔍 Suchen
+            </button>
+          </div>
+          <div id="liveSearchSourceChips" class="chip-row" style="margin-bottom:8px;">
+            <button class="chip active" data-src="all" onclick="setLiveSearchSource('all')">🌐 Alle Quellen</button>
+            <button class="chip" data-src="chefkoch" onclick="setLiveSearchSource('chefkoch')">👨‍🍳 Chefkoch</button>
+            <button class="chip" data-src="instagram" onclick="setLiveSearchSource('instagram')">📸 Instagram Reels</button>
+            <button class="chip" data-src="facebook" onclick="setLiveSearchSource('facebook')">📹 Facebook</button>
+            <button class="chip" data-src="blogs" onclick="setLiveSearchSource('blogs')">🥘 Foodblogs</button>
+          </div>
+          <div id="liveSearchResultsBox"></div>
+        </div>
+
+        <!-- Vorgeschlagene direkte Rezepte (Horizontal scrollbar) -->
+        <div class="section-card" data-import-group="web">
+          <div class="category-group-header" style="margin-bottom:4px;">
+            <div class="section-title" style="margin-bottom:0;">✨ Vorgeschlagene Original-Rezepte (1:1)</div>
+            <div class="category-header-right">
+              <button class="carousel-nav-btn" onclick="scrollRecipeCarousel('suggestedRecipesImport', -260)" title="Nach links">‹</button>
+              <button class="carousel-nav-btn" onclick="scrollRecipeCarousel('suggestedRecipesImport', 260)" title="Nach rechts">›</button>
+            </div>
+          </div>
+          <div class="section-desc">Alle Zutaten, Mengen & Nährwerte sind 1:1 mit der Originalseite abgeglichen (seitlich scrollbar):</div>
+          <div id="suggestedRecipesImport" class="recipe-carousel"></div>
+        </div>
+
+        <!-- 2. Kochbuch & Foto-Scanner (Galerie-Auswahl & Kamera + KI Vision / Offline-OCR) -->
+        <div class="section-card" data-import-group="photo" style="display:none;">
+          <div class="section-title">📷 Foto-Rezept auslesen (Kochbuch, Zeitschrift, Screenshot)</div>
+          <div class="section-desc">
+            Wähle ein Rezept-Foto aus deiner Galerie oder fotografiere es direkt ab. Die App liest <strong>Titel, Beschreibung, Zutaten (mit Mengen) &amp; Zubereitung</strong> automatisch aus und trägt alles in die richtigen Felder ein:
+          </div>
+          <input id="photoGalleryInput" type="file" accept="image/*" style="position:fixed; left:-9999px; width:1px; height:1px; opacity:0;" onchange="scanCookbookPhoto(event)" />
+          <input id="photoCameraInput" type="file" accept="image/*" capture="environment" style="position:fixed; left:-9999px; width:1px; height:1px; opacity:0;" onchange="scanCookbookPhoto(event)" />
+          <div class="btn-row">
+            <button type="button" class="btn btn-primary" onclick="triggerPhotoSelect('gallery')">
+              🖼️ Foto auswählen (Galerie)
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="triggerPhotoSelect('camera')">
+              📸 Kamera öffnen
+            </button>
+          </div>
+          <div id="photoScanPreviewBox" style="display:none; margin-top:12px;"></div>
+        </div>
+
+        <!-- 3. Eigenes Familienrezept eintragen -->
+        <div class="section-card" data-import-group="manual" style="display:none;">
+          <div class="section-title">✍️ Eigenes Rezept eintragen</div>
+          <div class="input-group">
+            <label class="input-label">Rezeptname</label>
+            <input id="manTitle" type="text" class="text-input" placeholder="z.B. Omas Pfannkuchen" />
+          </div>
+          <div class="btn-row" style="margin-bottom:11px;">
+            <div style="flex:1;">
+              <label class="input-label">Kategorie</label>
+              <select id="manCategory" class="select-input">
+                <option value="Pasta & Aufläufe">🍝 Pasta & Aufläufe</option>
+                <option value="Fleisch & Geflügel">🍗 Fleisch & Geflügel</option>
+                <option value="Vegetarisch & Vegan">🥦 Vegetarisch & Vegan</option>
+                <option value="Fisch & Meeresfrüchte">🐟 Fisch & Meeresfrüchte</option>
+                <option value="Suppen & Eintöpfe">🍲 Suppen & Eintöpfe</option>
+                <option value="Beilagen & Airfryer">🍟 Beilagen & Airfryer</option>
+                <option value="Süßes & Frühstück">🥞 Süßes & Frühstück</option>
+              </select>
+            </div>
+            <div style="width:84px;">
+              <label class="input-label">Minuten</label>
+              <input id="manTime" type="number" class="text-input" value="20" />
+            </div>
+            <div style="width:84px;">
+              <label class="input-label">Portionen</label>
+              <input id="manPortions" type="number" class="text-input" value="4" />
+            </div>
+          </div>
+          <div class="input-group">
+            <label class="input-label">📷 Rezept-Foto (optional – wird für alle synchronisiert)</label>
+            <input id="manPhotoFile" type="file" accept="image/*" class="text-input" style="padding:7px;" onchange="handleManualRecipePhotoSelect(event)" />
+            <div id="manPhotoPreviewWrap" style="display:none; margin-top:6px;">
+              <img id="manPhotoPreviewImg" src="" alt="Vorschau" style="width:100%; max-height:150px; object-fit:cover; border-radius:10px;" />
+            </div>
+          </div>
+          <div class="input-group">
+            <label class="input-label">Zutaten (1 pro Zeile, z.B. "250 g Mehl" oder "Salz und Pfeffer")</label>
+            <textarea id="manIngredients" class="textarea-input" placeholder="250 g Mehl&#10;400 ml Milch&#10;3 Eier&#10;Salz und Pfeffer"></textarea>
+          </div>
+          <div class="input-group">
+            <label class="input-label">Zubereitungsschritte (1 Schritt pro Zeile)</label>
+            <textarea id="manSteps" class="textarea-input" placeholder="Mehl, Milch und Eier glatt rühren.&#10;In einer Pfanne 3 Minuten von jeder Seite goldbraun backen."></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="saveManualRecipe()">
+            💾 Rezept für alle speichern
+          </button>
+        </div>
+
+        <!-- 4. Instagram / Facebook / TikTok Video & Offline-Tresor -->
+        <div class="section-card" data-import-group="video" style="display:none;">
+          <div class="section-title">📸 Instagram / Facebook Video speichern (Offline)</div>
+          <div class="section-desc">
+            Speichere Koch-Reels & Videos komplett offline auf deinem Smartphone und lass aus der Video-Beschreibung automatisch Zutaten & Schritte erstellen.
+          </div>
+          <div class="input-group">
+            <label class="input-label">Link zum Reel / Facebook-Video (oder direkter .mp4 Link)</label>
+            <input id="socialVideoUrl" type="url" class="text-input" placeholder="https://www.instagram.com/reel/..." />
+          </div>
+          <div class="input-group">
+            <label class="input-label">Videodatei für Offline-Tresor auswählen (vom Handy)</label>
+            <input id="socialVideoFile" type="file" accept="video/*" class="text-input" style="padding:8px;" />
+          </div>
+          <div class="input-group">
+            <label class="input-label">Kopierte Video-Beschreibung / Zutaten-Text</label>
+            <textarea id="socialCaptionText" class="textarea-input" placeholder="Kopiere hier den Text aus dem Beitrag rein – Mengen & Schritte werden 1:1 übernommen!"></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="importSocialVideoRecipe()">
+            📥 Video & Rezept offline speichern
+          </button>
+        </div>
+      </section>
+
+      <!-- TAB 3: GEMEINSAMER WOCHENPLANER -->
+      <section id="tab-planner" class="tab-view">
+        <div class="section-card">
+          <div class="section-title">📅 Gemeinsamer Wochenplan</div>
+          <div class="section-desc">
+            Plant eure Woche gemeinsam im Haushalt. Alle Änderungen sind sofort für alle sichtbar.
+          </div>
+          <div class="btn-row" style="margin-bottom:8px;">
+            <button id="aiWeekPlanBtn" class="btn btn-accent" style="font-size:12px; padding:10px 8px;" onclick="generateAiWeekPlan()">
+              ✨ KI-Wochenplan (Mo–So)
+            </button>
+            <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="autoFillWeekPlan()" title="Zufällig aus Sammlung füllen">
+              🎲 Zufall
+            </button>
+            <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="clearWeekPlan()" title="Wochenplan leeren">
+              🗑
+            </button>
+          </div>
+          <div id="aiWeekPlanHint" style="display:none; font-size:11.5px; color:#6ee7b7; margin-bottom:8px; padding:7px 10px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); border-radius:10px;"></div>
+          <button class="btn btn-primary" style="margin-bottom:10px;" onclick="addWholeWeekToShoppingList()">
+            🛒 Alle Wochen-Zutaten auf Einkaufsliste setzen
+          </button>
+          <div id="weekNutritionSummary"></div>
+          <div id="weekPlanContainer"></div>
+        </div>
+      </section>
+
+      <!-- TAB 4: AKTUELLE SUPERMARKT-ANGEBOTE & PROSPEKTE ALLER 12 HÄNDLER (KAUFDA) -->
+      <section id="tab-offers" class="tab-view">
+        <!-- Standort- & Gültigkeits-Leiste (Standard: 86399 Bobingen + Wochen-Gültigkeit Mo–Sa inkl. Sonntags-Vorschau) -->
+        <div id="offersLocationValidityBar" class="location-validity-bar">
+          <button type="button" class="location-pill-btn" onclick="toggleOfferLocationEditor()" title="PLZ / Ort für lokale Prospekte ändern">
+            <span>📍</span>
+            <span id="offerLocationLabel">86399 Bobingen</span>
+            <span style="font-size:9px; opacity:0.75;">✎</span>
+          </button>
+          <span id="offersWeekValidityBadge" class="validity-pill valid-active">
+            📅 Gültig: Mo, 16.11. – Sa, 21.11.
+          </span>
+          <button id="toggleRetailerMgrBtn" type="button" class="pill-btn" style="font-size:10.5px; padding:4px 8px; margin-left:auto;" onclick="toggleRetailerManagerBox()" title="Händler suchen, hinzufügen oder entfernen">
+            ⚙️ Händler
+          </button>
+          <button id="refreshBrochuresBtn" type="button" class="pill-btn" style="font-size:10.5px; padding:4px 8px;" onclick="refreshAllLiveBrochures(true)" title="Prospekte & Sonntags-Updates jetzt live abrufen">
+            🔄 Live
+          </button>
+        </div>
+
+        <!-- Einklappbare Händler-Verwaltung (Suchen, Hinzufügen, Entfernen) -->
+        <div id="retailerManagerBox" class="section-card" style="display:none; padding:10px 12px; margin-bottom:10px; border-color:rgba(16,185,129,0.45);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span style="font-size:12.5px; font-weight:800; color:#6ee7b7;">🏪 Deine Händler verwalten (Hinzufügen / Entfernen)</span>
+            <button type="button" class="pill-btn" style="font-size:10.5px; padding:2px 8px;" onclick="toggleRetailerManagerBox()">✕</button>
+          </div>
+          <div class="btn-row" style="margin-bottom:8px; gap:6px;">
+            <input id="retailerManagerSearch" type="text" class="text-input" style="padding:7px 10px; font-size:12.5px;" placeholder="Händler suchen oder neuen Namen eintippen (z.B. dm, Rossmann, Marktkauf)..." oninput="renderRetailerManagerList()" onkeydown="if(event.key==='Enter') addCustomRetailerFromSearch()" />
+            <button type="button" class="btn btn-primary" style="width:auto; padding:0 12px; font-size:12px; white-space:nowrap;" onclick="addCustomRetailerFromSearch()">+ Hinzufügen</button>
+          </div>
+          <div id="retailerManagerChips" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+        </div>
+
+        <!-- Einklappbare PLZ / Ort Auswahl (86399 Bobingen voreingestellt, jederzeit änderbar) -->
+        <div id="offerLocationEditorBox" class="section-card" style="display:none; padding:10px 12px; margin-bottom:10px; border-color:rgba(59,130,246,0.45);">
+          <div style="font-size:12px; font-weight:800; color:#93c5fd; margin-bottom:6px;">
+            📍 Standort für lokale Prospekte & Angebote (Standard: 86399 Bobingen)
+          </div>
+          <div class="btn-row">
+            <input
+              id="offerLocationZipInput"
+              type="text"
+              class="text-input"
+              style="width:110px; padding:8px 10px; font-size:13px;"
+              placeholder="PLZ (86399)"
+              value="86399"
+              onkeydown="if(event.key==='Enter') applyUserOfferLocation()"
+            />
+            <input
+              id="offerLocationCityInput"
+              type="text"
+              class="text-input"
+              style="flex:1; padding:8px 10px; font-size:13px;"
+              placeholder="Ort (z.B. Bobingen)"
+              value="Bobingen"
+              onkeydown="if(event.key==='Enter') applyUserOfferLocation()"
+            />
+            <button type="button" class="btn btn-primary" style="width:auto; padding:0 12px; font-size:12px;" onclick="applyUserOfferLocation()">
+              ✓ Speichern
+            </button>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:7px;">
+            <button type="button" class="chip" style="font-size:10.5px; padding:3px 8px;" onclick="setPresetOfferLocation('86399','Bobingen','48.274','10.835','Augsburg')">📍 86399 Bobingen</button>
+            <button type="button" class="chip" style="font-size:10.5px; padding:3px 8px;" onclick="setPresetOfferLocation('86150','Augsburg','48.3705','10.8978','Augsburg')">Augsburg</button>
+            <button type="button" class="chip" style="font-size:10.5px; padding:3px 8px;" onclick="setPresetOfferLocation('86830','Schwabmünchen','48.179','10.755','Augsburg')">Schwabmünchen</button>
+            <button type="button" class="chip" style="font-size:10.5px; padding:3px 8px;" onclick="setPresetOfferLocation('86343','Königsbrunn','48.269','10.888','Augsburg')">Königsbrunn</button>
+            <button type="button" class="chip" style="font-size:10.5px; padding:3px 8px;" onclick="setPresetOfferLocation('80331','München','48.1351','11.5820','Muenchen')">München</button>
+          </div>
+        </div>
+
+        <!-- Übersichtliche Modus-Wahl oben im Angebote-Tab -->
+        <div id="offersViewModeBar" class="sub-seg-bar">
+          <button class="sub-seg-btn active" data-omode="all" onclick="setOffersViewMode('all')">🏷️ Alle & Prospekte</button>
+          <button class="sub-seg-btn" data-omode="brochures-grid" onclick="setOffersViewMode('brochures-grid')">📖 12 Prospekte (Kacheln)</button>
+          <button class="sub-seg-btn" data-omode="shopping" onclick="setOffersViewMode('shopping')">🛒 Zum Einkauf</button>
+          <button class="sub-seg-btn" data-omode="recipes" onclick="setOffersViewMode('recipes')">🍲 Zu Rezepten</button>
+        </div>
+
+        <!-- 1. KAUFDA PROSPEKTE ALLER 12 HÄNDLER (2-Spalten-Raster als übersichtlicher Standard!) -->
+        <div id="brochuresSectionCard" class="section-card" style="padding:12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+            <div>
+              <div class="section-title" style="margin-bottom:2px; font-size:14px;">
+                📰 Aktuelle Wochenprospekte (12 Händler)
+              </div>
+              <div id="brochuresSubDesc" style="font-size:11px; color:var(--text-muted);">
+                Tippe auf ein Prospekt zum scharfen Durchblättern aller Seiten · Sonntags automatisch aktualisiert
+              </div>
+            </div>
+            <div class="view-mode-switcher" id="brochureLayoutSwitcher">
+              <button type="button" class="view-mode-btn active" data-blayout="grid" onclick="setBrochureShelfLayout('grid')" title="2-Spalten Kachel-Ansicht">🔲 Kacheln</button>
+              <button type="button" class="view-mode-btn" data-blayout="carousel" onclick="setBrochureShelfLayout('carousel')" title="Horizontal wischbares Karussell">🗂️ Reihe</button>
+            </div>
+          </div>
+          <div id="brochuresCarousel" class="brochure-grid-shelf"></div>
+        </div>
+
+        <!-- 2. KOMPAKTE SUCHE & HÄNDLER-FILTER -->
+        <div class="section-card" style="padding:12px;">
+          <div class="btn-row" style="margin-bottom:8px;">
+            <input
+              id="offerSearchInput"
+              type="text"
+              class="text-input"
+              style="padding:9px 12px; font-size:13.5px;"
+              placeholder="Angebot oder Zutat suchen (z.B. Hackfleisch, Butter, Lachs)..."
+              oninput="renderOffersTab()"
+              onkeydown="if(event.key==='Enter') executeLiveOfferSearch()"
+            />
+            <button id="offerLiveSearchBtn" class="btn btn-accent" style="width:auto; padding:0 14px; font-size:13px; white-space:nowrap;" onclick="executeLiveOfferSearch()">
+              🔍 Live
+            </button>
+          </div>
+
+          <!-- Horizontal scrollbare Zutaten-Schnellsuche -->
+          <div style="display:flex; align-items:center; gap:5px; margin-bottom:7px;">
+            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerIngredientChips', -160)" title="Zutaten nach links">‹</button>
+            <div id="offerIngredientChips" class="chip-row" style="flex:1; margin-bottom:0;">
+              <button class="chip" onclick="quickFetchIngredientOffers('Hackfleisch')">🥩 Hackfleisch</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Hähnchen')">🍗 Hähnchen</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Lachs')">🐟 Lachs</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Butter')">🧈 Butter</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Nudeln')">🍝 Nudeln</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Tomaten')">🍅 Tomaten</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Käse')">🧀 Käse</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Frischkäse')">🥣 Frischkäse</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Milch')">🥛 Milch</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Sahne')">🥛 Sahne</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Kartoffeln')">🥔 Kartoffeln</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Olivenöl')">🫒 Olivenöl</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Eier')">🥚 Eier</button>
+              <button class="chip" onclick="quickFetchIngredientOffers('Zwiebeln')">🧅 Zwiebeln</button>
+            </div>
+            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerIngredientChips', 160)" title="Zutaten nach rechts">›</button>
+          </div>
+
+          <!-- Horizontal scrollbarer Händler-Filter (Alle 12 Händler) -->
+          <div style="display:flex; align-items:center; gap:5px;">
+            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerRetailerChips', -160)" title="Händler nach links">‹</button>
+            <div id="offerRetailerChips" class="chip-row" style="flex:1; margin-bottom:0;"></div>
+            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerRetailerChips', 160)" title="Händler nach rechts">›</button>
+          </div>
+        </div>
+
+        <!-- KI-Sparrezept aus aktuellen Bobinger Angeboten -->
+        <div class="section-card" style="padding:10px 12px; margin-bottom:10px; border-color:rgba(16,185,129,0.35); background:rgba(16,185,129,0.08);">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+            <div style="font-size:12px; font-weight:700; color:#6ee7b7;">🍳 Was koche ich günstig aus den Angeboten?</div>
+            <button id="aiOfferRecipeBtn" type="button" class="pill-btn" style="background:rgba(16,185,129,0.22); border-color:rgba(16,185,129,0.55); color:#6ee7b7; font-size:11px; padding:5px 10px;" onclick="generateAiOfferRecipe()">
+              ✨ KI-Sparrezept erstellen
+            </button>
+          </div>
+          <div id="aiOfferRecipeBox" style="display:none; margin-top:8px;"></div>
+        </div>
+
+        <!-- Zusammenfassung passender Angebote für Einkaufsliste & Wochenplan -->
+        <div id="offersSummaryBanner"></div>
+
+        <!-- Übersichtlich gruppierte Angebote (2-Spalten-Raster) -->
+        <div id="offersListContainer"></div>
+      </section>
+
+      <!-- TAB 5: EINKAUFSLISTE & BRING! APP -->
+      <section id="tab-shopping" class="tab-view">
+        <!-- Smart-Tools für die Einkaufsliste: Bündelung & Haus-Vorrat-Filter -->
+        <div class="section-card" style="padding:11px 12px;">
+          <div style="font-size:12px; font-weight:700; margin-bottom:7px; color:var(--primary-light);">🧠 Intelligente Einkaufslisten-Optimierung</div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button id="toggleBundleShopBtn" class="pill-btn" onclick="toggleShoppingBundleMode()">
+              📦 Gleiche Zutaten bündeln: AN
+            </button>
+            <button id="togglePantryFilterBtn" class="pill-btn" onclick="togglePantryStaplesFilter()">
+              🧂 Haus-Vorrat ausblenden: AUS
+            </button>
+            <button id="aiOptimizeShopBtn" class="pill-btn" style="background:rgba(16,185,129,0.18); border-color:rgba(16,185,129,0.45); color:#6ee7b7;" onclick="optimizeShoppingListWithAI()" title="Ähnliche Artikel mit Groq-KI zusammenfassen & nach Supermarkt-Gängen sortieren">
+              ✨ KI-Aufräumen
+            </button>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+            Summiert identische Zutaten automatisch (z.B. 200 ml + 500 ml Milch = 700 ml) und zeigt passende Supermarkt-Angebote inkl. Ersparnis direkt an.
+          </div>
+        </div>
+
+        <div id="shoppingSavingsBanner"></div>
+
+        <div class="section-card">
+          <div class="section-title">📥 Zutaten direkt aus einem Rezept hinzufügen</div>
+          <div class="btn-row" style="margin-bottom:10px;">
+            <select id="shopQuickRecipeSelect" class="select-input" style="flex:1;">
+              <option value="">— Rezept wählen & alle Zutaten einfügen —</option>
+            </select>
+            <button class="btn btn-accent" style="width:auto; padding:0 14px; white-space:nowrap;" onclick="addSelectedRecipeFromShopTab()">
+              🛒＋ Zutaten einfügen
+            </button>
+          </div>
+          <div class="section-title" style="margin-top:6px;">＋ Einzelne Zutat manuell ergänzen</div>
+          <div class="btn-row">
+            <input id="manualShopName" type="text" class="text-input" placeholder="z.B. Hafermilch" style="flex:2;" onkeydown="if(event.key==='Enter') addManualShopItem()" />
+            <input id="manualShopSpec" type="text" class="text-input" placeholder="2 Liter" style="flex:1;" onkeydown="if(event.key==='Enter') addManualShopItem()" />
+            <button class="btn btn-primary" style="width:auto; padding:0 16px;" onclick="addManualShopItem()">＋</button>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap; margin:10px 4px;">
+          <span style="font-size:13px; font-weight:700;">Aktuelle Einkaufsliste</span>
+          <div style="display:flex; gap:6px;">
+            <button class="pill-btn" onclick="clearCheckedShoppingItems()">✓ Erledigte löschen</button>
+            <button class="pill-btn" style="color:#fca5a5; border-color:rgba(239,68,68,0.35);" onclick="clearAllShoppingItems()">🗑 Alles leeren</button>
+          </div>
+        </div>
+
+        <div id="shoppingListContainer"></div>
+
+        <!-- Bring! App Synchronisation unterhalb der aktuellen Einkaufsliste -->
+        <div id="bringSyncCardSection" class="section-card" style="margin-top:14px; background:rgba(0,133,111,0.14); border-color:rgba(0,133,111,0.35);">
+          <div class="section-title" style="color:#34d399;">🛒 Bring! App Synchronisation</div>
+          <div class="section-desc">
+            Sende alle offenen Zutaten direkt an eure gemeinsame <strong>Bring! App</strong>.
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-bring" onclick="exportShoppingListToBring()">
+              📲 Alle enthaltenen Zutaten zu Bring! senden
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: HAUSHALTS-KONTO, MITBENUTZER & INSTALLATIONS-HILFE -->
+      <section id="tab-household" class="tab-view">
+        <div class="section-card">
+          <div class="section-title">👨‍👩‍👧‍👦 Gemeinsames Haushalts-Konto & Sync</div>
+          <div class="section-desc">
+            Alle Personen mit demselben <strong>Haushalts-Code</strong> sehen neue Rezepte, Wochenpläne und Einkaufslisten automatisch synchron.
+          </div>
+          <div class="input-group">
+            <label class="input-label">Gemeinsamer Haushalts-Code (PIN)</label>
+            <input id="householdCodeInput" type="text" class="text-input" placeholder="FAMILIE-2026" />
+          </div>
+          <div class="input-group">
+            <label class="input-label">Dein Anzeigename im Haushalt</label>
+            <input id="memberNameInput" type="text" class="text-input" placeholder="z.B. Patrick" />
+          </div>
+          <div class="input-group">
+            <label class="input-label">Optional: Kostenloser KI-Key (Groq / OpenRouter / Gemini)</label>
+            <input id="geminiKeyInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" class="text-input masked-key-input" placeholder="gsk_... (Groq), sk-or-... oder AIza..." />
+          </div>
+          <button class="btn btn-primary" onclick="saveHouseholdSettings()">
+            💾 Konto-Einstellungen speichern & synchronisieren
+          </button>
+        </div>
+
+        <div class="section-card">
+          <div class="section-title">📲 Mitbenutzer hinzufügen & App installieren</div>
+          <div class="section-desc">
+            Füge Familienmitglieder/Partner hinzu und teile den Einladungs-Link. Wenn sie den Link öffnen, sind sie sofort in eurem gemeinsamen Konto eingeloggt!
+          </div>
+          <div id="householdMembersList" style="margin-bottom:12px;"></div>
+          <div class="btn-row" style="margin-bottom:12px;">
+            <input id="newMemberInput" type="text" class="text-input" placeholder="Name des neuen Mitbenutzers..." />
+            <button class="btn btn-secondary" style="width:auto; white-space:nowrap;" onclick="addHouseholdMember()">＋ Hinzufügen</button>
+          </div>
+          <div class="input-group">
+            <label class="input-label">Direkter Einladungs-Link (inkl. Haushalts-Code)</label>
+            <input id="householdInviteLink" type="text" class="text-input" readonly onclick="this.select()" />
+          </div>
+          <div style="text-align:center; margin:10px 0;">
+            <img id="householdQrImg" alt="QR-Code für Smartphone" style="width:150px; height:150px; border-radius:12px; background:#fff; padding:6px; display:none; margin:0 auto;" />
+            <div id="householdQrHint" style="font-size:11px; color:var(--text-muted); margin-top:4px; display:none;">Mit Smartphone-Kamera scannen, um direkt beizutreten</div>
+          </div>
+          <button class="btn btn-accent" onclick="shareHouseholdInvite()">
+            🔗 Einladungs-Link für iPhone & Android teilen
+          </button>
+          <div id="tunnelConnectionStatusBox" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="section-card" style="border-color:rgba(16,185,129,0.4); background:rgba(16,185,129,0.09);">
+          <div class="section-title">📥 App direkt herunterladen (ohne Drittanbieter!)</div>
+          <div class="section-desc">
+            Du brauchst <strong>keinen fremden Anbieter</strong> (kein App-Store, kein Cloud-Hoster). Lade die komplette App direkt als einzelne Datei herunter oder starte `Start-KochTresor-Server.bat` in deinem Ordner für alle Smartphones im Heim-WLAN:
+          </div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <button class="btn btn-primary" onclick="downloadStandaloneAppFile()">
+              📲 Komplett-App direkt herunterladen (KochTresor-App.html)
+            </button>
+            <button id="pwaInstallBtn" class="btn btn-accent" style="display:none;" onclick="triggerNativePwaInstall()">
+              ⚡ Direkt als Smartphone-App auf Home-Bildschirm installieren
+            </button>
+          </div>
+          <div class="section-desc" style="margin-top:10px; margin-bottom:0;">
+            • <strong>Direkt-Datei (`KochTresor-App.html`):</strong> Enthält bereits alle deine aktuellen Rezepte, das Design und die komplette Logik in einer einzigen Datei – einfach per WhatsApp, AirDrop, E-Mail oder USB aufs Handy schicken und antippen!<br/>
+            • <strong>Heim-WLAN-Modus (`Start-KochTresor-Server.bat`):</strong> Doppelklicke die Datei im Ordner `RezepteApp` am PC – alle Handys im WLAN können die App sofort unter der angezeigten Adresse öffnen und über <em>„Zum Home-Bildschirm hinzufügen“</em> installieren.
+          </div>
+          <div class="btn-row" style="margin-top:10px;">
+            <button class="btn btn-secondary" onclick="exportFullBackup()">⬇️ Rezept-Backup (.json)</button>
+            <label class="btn btn-secondary" style="cursor:pointer;">
+              ⬆️ Backup laden
+              <input type="file" accept=".json" style="display:none;" onchange="importFullBackup(event)" />
+            </label>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Smartphone Navigation (6 Tabs) -->
+    <nav class="bottom-nav">
+      <button class="nav-item active" data-tab="recipes" onclick="switchTab('recipes')">
+        <span class="nav-icon">📖</span>
+        <span>Sammlung</span>
+      </button>
+      <button class="nav-item" data-tab="import" onclick="switchTab('import')">
+        <span class="nav-icon">🔎</span>
+        <span>Suche/Neu</span>
+      </button>
+      <button class="nav-item" data-tab="planner" onclick="switchTab('planner')">
+        <span class="nav-icon">📅</span>
+        <span>Woche</span>
+      </button>
+      <button class="nav-item" data-tab="offers" onclick="switchTab('offers')">
+        <span class="nav-icon">🏷️</span>
+        <span>Angebote</span>
+        <span id="offersMatchBadge" class="nav-badge" style="display:none; background:#10b981;">0</span>
+      </button>
+      <button class="nav-item" data-tab="shopping" onclick="switchTab('shopping')">
+        <span class="nav-icon">🛒</span>
+        <span>Bring!</span>
+        <span id="shopBadge" class="nav-badge" style="display:none;">0</span>
+      </button>
+      <button class="nav-item" data-tab="household" onclick="switchTab('household')">
+        <span class="nav-icon">👥</span>
+        <span>Haushalt</span>
+      </button>
+    </nav>
+
+    <!-- MODAL 1: REZEPT-DETAILANSICHT -->
+    <div id="detailModal" class="modal-overlay">
+      <div class="modal-header">
+        <button class="pill-btn" onclick="closeRecipeDetail()">← Zurück</button>
+        <span style="font-weight:700; font-size:14px;">1:1 Original-Rezept</span>
+        <button class="pill-btn" onclick="startCookMode(state.activeRecipeId)">🔥 Kochmodus</button>
+      </div>
+      <div id="detailModalBody" class="modal-body"></div>
+    </div>
+
+    <!-- MODAL 2: KOCHMODUS (MIT DISPLAY-WACHHALTER, FREIHAND-SPRACHSTEUERUNG & TIMERN) -->
+    <div id="cookModal" class="modal-overlay cook-overlay">
+      <div class="modal-header">
+        <button class="pill-btn" onclick="stopCookMode()">✕ Beenden</button>
+        <span style="font-weight:800; font-size:13px; color:var(--primary-light);">👩‍🍳 KOCHMODUS</span>
+        <div style="display:flex; gap:5px;">
+          <button id="voiceControlBtn" class="pill-btn" onclick="toggleVoiceControl()" title="Freihand-Sprachsteuerung (Sage: Weiter, Zurück, Vorlesen, Timer)">
+            🎙️ Freihand
+          </button>
+          <button class="pill-btn" onclick="openKitchenToolsModal()" title="Küchen-Umrechner & Ersatz-Zutaten">
+            🧮
+          </button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="wakelock-banner">
+          <span id="wakeLockStatusText">💡 Display-Wachhalter aktiv (Bildschirm schaltet nicht aus)</span>
+        </div>
+        <div id="voiceStatusBanner" class="wakelock-banner" style="display:none; background:rgba(239,68,68,0.16); border-color:rgba(239,68,68,0.45); color:#fca5a5;">
+          <span>🎙️ Freihand aktiv – Sage: <strong>„Weiter“</strong>, <strong>„Zurück“</strong>, <strong>„Vorlesen“</strong> oder <strong>„Timer“</strong></span>
+        </div>
+        <div id="activeTimersBox" class="active-timers"></div>
+        <div id="cookStepContainer"></div>
+      </div>
+    </div>
+
+    <!-- MODAL 3: BRING! APP EXPORT DIALOG -->
+    <div id="bringModal" class="modal-overlay">
+      <div class="modal-header">
+        <button class="pill-btn" onclick="document.getElementById('bringModal').classList.remove('open')">← Schließen</button>
+        <span style="font-weight:700; font-size:14px;">Bring! App Export</span>
+        <span></span>
+      </div>
+      <div id="bringModalBody" class="modal-body"></div>
+    </div>
+
+    <!-- MODAL 4: KÜCHEN-TOOLS, BACKFORM-/AIRFRYER-RECHNER & ERSATZ-ZUTATEN -->
+    <div id="toolsModal" class="modal-overlay">
+      <div class="modal-header">
+        <button class="pill-btn" onclick="closeKitchenToolsModal()">← Schließen</button>
+        <span style="font-weight:700; font-size:14px;">🧮 Küchen-Tools & Helfer</span>
+        <span></span>
+      </div>
+      <div class="modal-body">
+        <!-- 1. Backofen / Umluft / Airfryer Umrechner -->
+        <div class="section-card">
+          <div class="section-title">🌡️ Ofen ↔ Umluft ↔ Airfryer Umrechner</div>
+          <div class="section-desc">Gib die Temperatur & Backzeit aus dem Rezept (Ober-/Unterhitze) ein:</div>
+          <div class="btn-row" style="margin-bottom:10px;">
+            <div style="flex:1;">
+              <label class="input-label">Ober-/Unterhitze (°C)</label>
+              <input id="toolOvenTemp" type="number" class="text-input" value="200" oninput="updateKitchenCalculators()" />
+            </div>
+            <div style="flex:1;">
+              <label class="input-label">Rezept-Backzeit (Min)</label>
+              <input id="toolOvenTime" type="number" class="text-input" value="25" oninput="updateKitchenCalculators()" />
+            </div>
+          </div>
+          <div id="toolOvenResult" class="nutrition-grid" style="grid-template-columns:repeat(2, 1fr);"></div>
+        </div>
+
+        <!-- 2. Springform- & Backblech-Umrechner -->
+        <div class="section-card">
+          <div class="section-title">📐 Backform- & Springform-Umrechner</div>
+          <div class="section-desc">Berechnet den exakten Mengen-Faktor für andere Backformen:</div>
+          <div class="btn-row" style="margin-bottom:10px;">
+            <div style="flex:1;">
+              <label class="input-label">Rezept-Form</label>
+              <select id="toolPanFrom" class="select-input" onchange="updateKitchenCalculators()">
+                <option value="18">Springform Ø 18 cm</option>
+                <option value="20">Springform Ø 20 cm</option>
+                <option value="24">Springform Ø 24 cm</option>
+                <option value="26" selected>Springform Ø 26 cm</option>
+                <option value="28">Springform Ø 28 cm</option>
+                <option value="blech">Backblech (38×30 cm)</option>
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label class="input-label">Deine Form</label>
+              <select id="toolPanTo" class="select-input" onchange="updateKitchenCalculators()">
+                <option value="18">Springform Ø 18 cm</option>
+                <option value="20" selected>Springform Ø 20 cm</option>
+                <option value="24">Springform Ø 24 cm</option>
+                <option value="26">Springform Ø 26 cm</option>
+                <option value="28">Springform Ø 28 cm</option>
+                <option value="blech">Backblech (38×30 cm)</option>
+              </select>
+            </div>
+          </div>
+          <div id="toolPanResult"></div>
+        </div>
+
+        <!-- 3. US-Cups / Unzen / °F -> Gramm & ml Umrechner -->
+        <div class="section-card">
+          <div class="section-title">🇺🇸 US-Cup / oz / °F → Gramm & ml</div>
+          <div class="btn-row" style="margin-bottom:10px;">
+            <div style="width:90px;">
+              <label class="input-label">Anzahl</label>
+              <input id="toolCupAmount" type="number" step="0.25" class="text-input" value="1" oninput="updateKitchenCalculators()" />
+            </div>
+            <div style="flex:1;">
+              <label class="input-label">US-Einheit / Zutat</label>
+              <select id="toolCupType" class="select-input" onchange="updateKitchenCalculators()">
+                <option value="cup_flour">Cup Mehl (Weizenmehl)</option>
+                <option value="cup_sugar">Cup Zucker (weiß)</option>
+                <option value="cup_brownsugar">Cup Brauner Zucker</option>
+                <option value="cup_butter">Cup Butter</option>
+                <option value="cup_liquid">Cup Flüssigkeit (Milch/Wasser)</option>
+                <option value="cup_oats">Cup Haferflocken</option>
+                <option value="cup_rice">Cup Reis (ungekocht)</option>
+                <option value="stick_butter">Stick Butter (US)</option>
+                <option value="oz_weight">Unze / oz (Gewicht)</option>
+                <option value="fl_oz">Fluid Ounce / fl oz</option>
+                <option value="fahrenheit">Grad Fahrenheit (°F → °C)</option>
+              </select>
+            </div>
+          </div>
+          <div id="toolCupResult" class="planner-preview-ings-short" style="font-size:13.5px; text-align:center;"></div>
+        </div>
+
+        <!-- 4. "Mir fehlt eine Zutat!" Ersatz-Helfer -->
+        <div class="section-card">
+          <div class="section-title">🔄 „Mir fehlt eine Zutat!“ Ersatz-Helfer</div>
+          <div class="section-desc">Was kannst du nehmen, wenn beim Kochen plötzlich eine Zutat fehlt?</div>
+          <div class="input-group">
+            <input
+              id="toolSubSearchInput"
+              type="text"
+              class="text-input"
+              placeholder="Zutat suchen (z.B. Schmand, Ei, Weißwein, Buttermilch)..."
+              oninput="renderSubstituteHelper()"
+            />
+          </div>
+          <div id="toolSubListContainer"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL 5: BILD-GROSSANSICHT (LIGHTBOX FÜR ANGEBOTS-ARTIKEL & KAUFDA PROSPEKTE) -->
+    <div id="imageLightboxModal" class="modal-overlay" style="background:rgba(2, 6, 23, 0.96); z-index:95;">
+      <div class="modal-header">
+        <button class="pill-btn" onclick="closeImageLightbox()">← Zurück</button>
+        <span id="lightboxHeaderTitle" style="font-weight:700; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:210px;">Artikel-Bild in Groß</span>
+        <button class="pill-btn" onclick="toggleLightboxZoom()" id="lightboxZoomBtn" title="Bild vergrößern / verkleinern">🔍 Zoom</button>
+      </div>
+      <div id="imageLightboxBody" class="modal-body" style="display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:12px;"></div>
+    </div>
+
+    <!-- MODAL 6: IN-APP KAUFDA PROSPEKT-BLÄTTERKATALOG (ALLE SEITEN + ANGEBOTE PRO SEITE) -->
+    <div id="brochureReaderModal" class="modal-overlay" style="background:rgba(2, 6, 23, 0.98); z-index:96;">
+      <div class="modal-header">
+        <button class="pill-btn" onclick="closeBrochureReaderModal()">← Zurück</button>
+        <span id="brochureReaderHeaderTitle" style="font-weight:800; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:210px;">📖 KaufDA Prospekt</span>
+        <a id="brochureReaderExternalLink" href="https://www.kaufda.de" target="_blank" rel="noopener" class="pill-btn" style="background:var(--primary); color:#fff; border:none; text-decoration:none; font-size:11px;">
+          KaufDA ↗
+        </a>
+      </div>
+      <div id="brochureReaderBody" class="modal-body" style="display:flex; flex-direction:column; align-items:center; gap:10px;"></div>
+    </div>
+  </div>
+
+  <script src="./app.js?v=43"></script>
+</body>
+</html>
