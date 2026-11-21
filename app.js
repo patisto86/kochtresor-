@@ -4,7 +4,7 @@
 
 const DB_NAME = 'KochTresorDB';
 const DB_VERSION = 1;
-const DATA_SCHEMA_VERSION = '2026-11-21-v43-syntax-fix';
+const DATA_SCHEMA_VERSION = '2026-11-21-v44-github-pages-invite-fix';
 
 if (typeof window !== 'undefined' && /\.netlify\.app$/i.test(window.location.hostname || '')) {
   if (document.body) {
@@ -6818,6 +6818,8 @@ function getPublicShareBaseUrl() {
   ) {
     return (state.publicAppUrl || state.backupPublicUrl || DEFAULT_PUBLIC_APP_URL).replace(/\/+$/, '');
   }
+  const basePath = (window.location.pathname || '/').replace(/\/index\.html$/i, '').replace(/\/+$/, '');
+  const fullOriginWithPath = `${window.location.origin.replace(/\/+$/, '')}${basePath}`;
   if (
     host.endsWith('.netlify.app') ||
     host.endsWith('.pages.dev') ||
@@ -6826,9 +6828,9 @@ function getPublicShareBaseUrl() {
     host.endsWith('.trycloudflare.com') ||
     host.endsWith('.lhr.life')
   ) {
-    return window.location.origin.replace(/\/+$/, '');
+    return fullOriginWithPath;
   }
-  return (window.location.origin || state.publicAppUrl || state.backupPublicUrl || DEFAULT_PUBLIC_APP_URL).replace(/\/+$/, '');
+  return (fullOriginWithPath || state.publicAppUrl || state.backupPublicUrl || DEFAULT_PUBLIC_APP_URL).replace(/\/+$/, '');
 }
 
 function isSupabaseSyncConfigured() {
@@ -6932,7 +6934,7 @@ function renderHouseholdSettings() {
         <div style="font-size:12.5px; font-weight:800; color:${state.household.syncStatus === 'error' ? '#fbbf24' : sbReady ? '#6ee7b7' : '#93c5fd'};">
           ${syncHeadline}
         </div>
-        <span class="validity-pill valid-active" style="font-size:10px;">v43 · ${escapeHtml(state.household.code)}</span>
+        <span class="validity-pill valid-active" style="font-size:10px;">v44 · ${escapeHtml(state.household.code)}</span>
       </div>
       <div style="font-size:11.5px; color:#cbd5e1; line-height:1.45; margin-bottom:6px;">
         ${

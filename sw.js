@@ -1,9 +1,9 @@
-const CACHE_NAME = 'kochtresor-v43';
+const CACHE_NAME = 'kochtresor-v44';
 const ASSETS = [
   './',
   './index.html',
-  './styles.css?v=43',
-  './app.js?v=43',
+  './styles.css?v=44',
+  './app.js?v=44',
   './manifest.json',
   './icon.svg'
 ];
