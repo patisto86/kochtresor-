@@ -4,12 +4,20 @@
 
 const DB_NAME = 'KochTresorDB';
 const DB_VERSION = 1;
-const DATA_SCHEMA_VERSION = '2026-11-28-v45-complete-suite';
+const DATA_SCHEMA_VERSION = '2026-11-28-v46-clean-ui-brochure-fix';
 
 function getOrCreateHouseholdSyncSecret() {
   try {
-    let existing = localStorage.getItem('kt_sync_secret') || '';
-    if (existing && existing.length >= 16) return existing;
+    let existing =
+      (typeof state !== 'undefined' && state?.household?.syncSecret) ||
+      localStorage.getItem('kt_household_sync_secret') ||
+      localStorage.getItem('kt_sync_secret') ||
+      '';
+    if (existing && existing.length >= 12) {
+      localStorage.setItem('kt_household_sync_secret', existing);
+      localStorage.setItem('kt_sync_secret', existing);
+      return existing;
+    }
     const arr = new Uint8Array(16);
     if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
       crypto.getRandomValues(arr);
@@ -17,6 +25,7 @@ function getOrCreateHouseholdSyncSecret() {
       for (let i = 0; i < 16; i++) arr[i] = Math.floor(Math.random() * 256);
     }
     existing = Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('kt_household_sync_secret', existing);
     localStorage.setItem('kt_sync_secret', existing);
     return existing;
   } catch (_) {
@@ -850,11 +859,11 @@ async function ensureDemoOfflineVideo() {
 // ============================================================================
 window.addEventListener('DOMContentLoaded', async () => {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js?v=45').then((reg) => reg.update()).catch(() => {});
+    navigator.serviceWorker.register('./sw.js?v=46').then((reg) => reg.update()).catch(() => {});
   }
   if ('caches' in window) {
     caches.keys().then((keys) => {
-      keys.filter((k) => k !== 'kochtresor-v45').forEach((k) => caches.delete(k));
+      keys.filter((k) => k !== 'kochtresor-v46').forEach((k) => caches.delete(k));
     }).catch(() => {});
   }
 
@@ -1762,8 +1771,7 @@ function renderRecipes() {
       }
     }
     if (q) {
-      const hay = `${r.title} ${rCat} ${(r.tags || []).join(' ')} ${(r.ingredients || []).map((i) => i.name).join(' ')}`.toLowerCase();
-      if (!hay.includes(q)) return false;
+      if (!doesRecipeMatchSmartSearch(r, rCat, q)) return false;
     }
     if (fridgeTerms.length > 0) {
       const matchedIngs = getMatchedFridgeIngredients(r, fridgeTerms);
@@ -6742,25 +6750,52 @@ async function addPlannedDayToShoppingList(day, event) {
   showToast(`🛒 Zutaten für ${day} (${targetPortions} Portionen) auf die Einkaufsliste gesetzt!`);
 }
 
-async function executePlannerOnlineSearch() {
+function togglePlannerToolsDrawer() {
+  const body = document.getElementById('plannerToolsBody');
+  const arrow = document.getElementById('plannerToolsArrow');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (arrow) arrow.textContent = isOpen ? '▼ Aufklappen' : '▲ Einklappen';
+}
+
+async function executePlannerOnlineSearch(overrideTerm = '') {
   const inp = document.getElementById('plannerOnlineSearchInput');
   const box = document.getElementById('plannerOnlineResultsBox');
-  const query = (inp?.value || '').trim();
+  if (overrideTerm && inp) inp.value = overrideTerm;
+  const query = (overrideTerm || inp?.value || '').trim();
   if (!query) {
-    showToast('Bitte ein Gericht oder eine Zutat zum Suchen eingeben');
+    showToast('Bitte ein Gericht oder Schlagwort (z.B. eiweißreich, gesund) eingeben');
     if (inp) inp.focus();
     return;
   }
+  const expanded = expandSmartRecipeSearchQueries(query);
   if (box) {
     box.style.display = 'block';
-    box.innerHTML = `<div style="font-size:12px; color:#93c5fd; padding:8px;">🔎 Suche online nach Rezepten für „<strong>${escapeHtml(query)}</strong>“...</div>`;
+    box.innerHTML = `<div style="font-size:12px; color:#93c5fd; padding:8px;">🔎 Suche online nach ${expanded.badge ? `<strong>${escapeHtml(expanded.badge)}</strong> · ` : ''}„<strong>${escapeHtml(query)}</strong>“...</div>`;
   }
-  const settled = await Promise.allSettled([searchChefkochLive(query), searchFoodblogsLive(query)]);
+  const tasks = [
+    ...expanded.chefkochQueries.slice(0, 3).map((cq) => searchChefkochLive(cq, expanded.badge)),
+    ...expanded.blogQueries.slice(0, 2).map((bq) => searchFoodblogsLive(bq, expanded.badge))
+  ];
+  if (expanded.isLifestyleQuery) {
+    tasks.push(searchWebRecipesSmartFallback(expanded.webQuery || query, expanded.badge));
+  }
+  const settled = await Promise.allSettled(tasks);
   let hits = [];
+  const seenUrls = new Set();
   settled.forEach((s) => {
-    if (s.status === 'fulfilled' && Array.isArray(s.value)) hits = hits.concat(s.value);
+    if (s.status === 'fulfilled' && Array.isArray(s.value)) {
+      s.value.forEach((item) => {
+        const uKey = normalizeUrlForRecipeMatch(item.url);
+        if (uKey && !seenUrls.has(uKey)) {
+          seenUrls.add(uKey);
+          hits.push(item);
+        }
+      });
+    }
   });
-  state.plannerOnlineResults = hits.slice(0, 8);
+  state.plannerOnlineResults = hits.slice(0, 10);
   renderPlannerOnlineSearchResults();
 }
 
@@ -7257,6 +7292,10 @@ function togglePlannerVisualPicker(day) {
 async function updateWeekDay(day, value) {
   if (value === '__SEARCH_NEW__') {
     renderWeekPlan();
+    const body = document.getElementById('plannerToolsBody');
+    if (body && body.style.display === 'none') {
+      togglePlannerToolsDrawer();
+    }
     const inp = document.getElementById('plannerOnlineSearchInput');
     if (inp) {
       inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -7521,7 +7560,7 @@ function renderHouseholdSettings() {
         <div style="font-size:12.5px; font-weight:800; color:${state.household.syncStatus === 'error' ? '#fbbf24' : sbReady ? '#6ee7b7' : '#93c5fd'};">
           ${syncHeadline}
         </div>
-        <span class="validity-pill valid-active" style="font-size:10px;">🔒 RLS v45 · ${escapeHtml(state.household.code)}</span>
+        <span class="validity-pill valid-active" style="font-size:10px;">🔒 RLS v46 · ${escapeHtml(state.household.code)}</span>
       </div>
       <div style="font-size:11.5px; color:#cbd5e1; line-height:1.45; margin-bottom:6px;">
         ${
@@ -8178,10 +8217,231 @@ function escapeHtml(str) {
 }
 
 // ============================================================================
-// 11. IN-APP LIVE-SUCHE (Chefkoch, Instagram Reels, Facebook & Foodblogs)
+// 11. IN-APP LIVE-SUCHE MIT SMART-SCHLAGWORT-ERKENNUNG (gesund, eiweißreich, Low Carb, etc.)
 // ============================================================================
 state.liveSearchSource = 'all';
 state.liveSearchResults = [];
+
+const SMART_RECIPE_KEYWORD_PROFILES = [
+  {
+    pattern: /\b(eiwei[sß]+reich\w*|eiwei[sß]\b|viel\s+eiwei[sß]|protein\w*|high[\s-]?protein|muskelaufbau|quark|sky\w*)\b/i,
+    badge: '💪 Eiweißreich',
+    chefkochTerms: ['High Protein', 'Proteinreich', 'Eiweißreich Hähnchen Quark Linsen'],
+    blogTerms: ['Protein', 'Linsen', 'Hähnchen'],
+    webSearch: 'eiweißreiche Rezepte High Protein gesund Chefkoch',
+    localCheck: (r) => {
+      const p = parseNumericMacro(r.nutrition?.protein);
+      if (p >= 24) return true;
+      const hay = `${r.title} ${(r.ingredients || []).map((i) => i.name).join(' ')}`.toLowerCase();
+      return /(hähnchen|lachs|thunfisch|quark|skyr|linsen|kichererbsen|bohnen|tofu|rind|hackfleisch|ei\b|eier)/i.test(hay);
+    }
+  },
+  {
+    pattern: /\b(gesund\w*|clean[\s-]?eating|ausgewogen\w*|vitaminreich\w*|fit\b|fitness\w*|leicht\w*|gemüse[\s-]?reich)\b/i,
+    badge: '🥗 Gesund & Leicht',
+    chefkochTerms: ['Gesund leicht', 'Gemüse Bowl Lachs', 'Fitness Pfanne gesund'],
+    blogTerms: ['Bowl', 'Gemüse', 'Ofengemüse'],
+    webSearch: 'gesunde Rezepte leicht schnell Gemüse Chefkoch',
+    localCheck: (r) => {
+      const kcal = Number(r.nutrition?.kcal) || 0;
+      if (kcal > 0 && kcal <= 560) return true;
+      const hay = `${r.title} ${r.category || ''} ${(r.ingredients || []).map((i) => i.name).join(' ')}`.toLowerCase();
+      return /(gemüse|salat|spinat|brokkoli|lachs|linsen|couscous|kichererbsen|vegetarisch)/i.test(hay);
+    }
+  },
+  {
+    pattern: /\b(kalorienarm\w*|abnehmen|di[äa]t\w*|fettarm\w*|wenig\s+kalorien|unter\s+\d+\s*kcal|figur\w*)\b/i,
+    badge: '🔥 Kalorienarm',
+    chefkochTerms: ['Kalorienarm', 'Leicht Abnehmen Gemüse', 'Fettarm Pfanne'],
+    blogTerms: ['Leicht', 'Gemüsepfanne', 'Salat'],
+    webSearch: 'kalorienarme Rezepte zum Abnehmen unter 450 kcal',
+    localCheck: (r) => {
+      const kcal = Number(r.nutrition?.kcal) || 0;
+      return kcal > 0 ? kcal <= 500 : /(gemüse|suppe|salat|hähnchen|fisch)/i.test(r.title || '');
+    }
+  },
+  {
+    pattern: /\b(low[\s-]?carb|kohlenhydratarm\w*|keto\w*|ohne\s+kohlenhydrate)\b/i,
+    badge: '🥑 Low Carb',
+    chefkochTerms: ['Low Carb', 'Low Carb Auflauf Pfanne', 'Kohlenhydratarm'],
+    blogTerms: ['Low Carb', 'Zucchini', 'Ofengemüse'],
+    webSearch: 'Low Carb Rezepte Abendessen schnell',
+    localCheck: (r) => {
+      const carbs = parseNumericMacro(r.nutrition?.carbs);
+      if (carbs > 0 && carbs <= 28) return true;
+      const hay = `${r.title} ${(r.ingredients || []).map((i) => i.name).join(' ')}`.toLowerCase();
+      return !/(nudeln|spaghetti|penne|reis|mehl|zucker|brot|kartoffel)/i.test(hay);
+    }
+  },
+  {
+    pattern: /\b(ballaststoff\w*|vollkorn\w*|darmgesund\w*)\b/i,
+    badge: '🌾 Ballaststoffreich',
+    chefkochTerms: ['Ballaststoffreich Linsen Vollkorn', 'Kichererbsen Gemüse'],
+    blogTerms: ['Linsen', 'Kichererbsen', 'Vollkorn'],
+    webSearch: 'ballaststoffreiche Rezepte gesund Linsen Vollkorn',
+    localCheck: (r) => /(linsen|kichererbsen|bohnen|vollkorn|hafer|gemüse|brokkoli)/i.test(`${r.title} ${(r.ingredients || []).map((i) => i.name).join(' ')}`)
+  },
+  {
+    pattern: /\b(schnell\w*|feierabend\w*|express|15\s*min\w*|20\s*min\w*|fix)\b/i,
+    badge: '⚡ Schnell (≤ 25 Min)',
+    chefkochTerms: ['Schnelles Feierabendrezept', '20 Minuten Pfanne Pasta'],
+    blogTerms: ['Schnell', '20 Minuten', 'Feierabend'],
+    webSearch: 'schnelle Feierabendrezepte in 20 Minuten',
+    localCheck: (r) => (Number(r.prepTime) || 25) <= 25
+  },
+  {
+    pattern: /\b(vegetarisch\w*|veggie|fleischlos\w*)\b/i,
+    badge: '🥦 Vegetarisch',
+    chefkochTerms: ['Vegetarisch Hauptspeise', 'Gemüse Auflauf vegetarisch'],
+    blogTerms: ['Vegetarisch', 'Gemüse', 'Auflauf'],
+    webSearch: 'vegetarische Hauptgerichte einfach lecker',
+    localCheck: (r) => /vegetarisch|vegan/i.test(`${r.category || ''} ${(r.tags || []).join(' ')}`)
+  },
+  {
+    pattern: /\b(vegan\w*|pflanzlich\w*)\b/i,
+    badge: '🌱 Vegan',
+    chefkochTerms: ['Vegan Hauptgericht', 'Vegan Curry Linsen Bowl'],
+    blogTerms: ['Vegan', 'Curry', 'Linsen'],
+    webSearch: 'vegane Rezepte schnell gesund',
+    localCheck: (r) => /vegan/i.test(`${r.title} ${r.category || ''} ${(r.tags || []).join(' ')}`)
+  },
+  {
+    pattern: /\b(airfryer|hei[sß]luftfritteuse)\b/i,
+    badge: '🍟 Airfryer',
+    chefkochTerms: ['Airfryer', 'Heißluftfritteuse Rezept'],
+    blogTerms: ['Airfryer', 'Heißluftfritteuse'],
+    webSearch: 'Airfryer Heißluftfritteuse Rezepte Deutsch',
+    localCheck: (r) => /airfryer|heißluft/i.test(`${r.title} ${r.category || ''} ${(r.tags || []).join(' ')}`)
+  },
+  {
+    pattern: /\b(one[\s-]?pot|alles\s+in\s+einem\s+topf)\b/i,
+    badge: '🍲 One Pot',
+    chefkochTerms: ['One Pot', 'One Pot Pasta Pfanne'],
+    blogTerms: ['One Pot', 'Eintopf'],
+    webSearch: 'One Pot Rezepte schnell Familie',
+    localCheck: (r) => /one\s*pot|eintopf|pfanne/i.test(`${r.title} ${r.category || ''}`)
+  },
+  {
+    pattern: /\b(meal[\s-]?prep|vorkochen|b[üu]ro[\s-]?essen|mitnehmen)\b/i,
+    badge: '🍱 Meal Prep',
+    chefkochTerms: ['Meal Prep', 'Büro Mittagessen vorkochen'],
+    blogTerms: ['Meal Prep', 'Salat', 'Bowl'],
+    webSearch: 'Meal Prep Rezepte gesund vorkochen',
+    localCheck: () => false
+  },
+  {
+    pattern: /\b(kinder\w*|familien\w*|kleinkind\w*)\b/i,
+    badge: '👨‍👩‍👧 Familien-Hit',
+    chefkochTerms: ['Kinder Lieblingsessen', 'Familienrezept einfach'],
+    blogTerms: ['Kinder', 'Familie', 'Auflauf'],
+    webSearch: 'beliebte Familienrezepte für Kinder schnell',
+    localCheck: (r) => /familie|pasta|pfannkuchen|auflauf|gnocchi/i.test(`${r.title} ${r.category || ''} ${(r.tags || []).join(' ')}`)
+  },
+  {
+    pattern: /\b(glutenfrei\w*)\b/i,
+    badge: '🌾 Glutenfrei',
+    chefkochTerms: ['Glutenfrei Hauptgericht', 'Glutenfrei gesund'],
+    blogTerms: ['Glutenfrei', 'Reis', 'Kartoffel'],
+    webSearch: 'glutenfreie Rezepte Hauptgericht',
+    localCheck: () => false
+  },
+  {
+    pattern: /\b(laktosefrei\w*)\b/i,
+    badge: '🥛 Laktosefrei',
+    chefkochTerms: ['Laktosefrei', 'Laktosefrei Kochen'],
+    blogTerms: ['Laktosefrei', 'Kokosmilch'],
+    webSearch: 'laktosefreie Rezepte einfach',
+    localCheck: () => false
+  }
+];
+
+function doesRecipeMatchSmartSearch(recipe, categoryLabel, rawQuery) {
+  const q = String(rawQuery || '').toLowerCase().trim();
+  if (!q) return true;
+  const hay = `${recipe.title} ${categoryLabel} ${(recipe.tags || []).join(' ')} ${(recipe.ingredients || []).map((i) => i.name).join(' ')}`.toLowerCase();
+  if (hay.includes(q)) return true;
+
+  for (const prof of SMART_RECIPE_KEYWORD_PROFILES) {
+    if (prof.pattern.test(q)) {
+      const leftover = q.replace(prof.pattern, ' ').replace(/\b(rezept|rezepte|gericht|gerichte|essen|und|mit|für)\b/gi, ' ').trim();
+      const matchesProfile = prof.localCheck ? prof.localCheck(recipe) : false;
+      if (!matchesProfile) continue;
+      if (!leftover) return true;
+      if (leftover.split(/\s+/).every((word) => hay.includes(word))) return true;
+    }
+  }
+  return false;
+}
+
+function expandSmartRecipeSearchQueries(rawQuery) {
+  const clean = String(rawQuery || '').trim();
+  if (!clean) {
+    return { isLifestyleQuery: false, badge: '', chefkochQueries: [], blogQueries: [], socialQuery: '', webQuery: '' };
+  }
+
+  const matchedProfiles = SMART_RECIPE_KEYWORD_PROFILES.filter((p) => p.pattern.test(clean));
+  if (matchedProfiles.length === 0) {
+    return {
+      isLifestyleQuery: false,
+      badge: '',
+      chefkochQueries: [clean],
+      blogQueries: [clean],
+      socialQuery: clean,
+      webQuery: `${clean} Rezept`
+    };
+  }
+
+  let coreDish = clean;
+  matchedProfiles.forEach((p) => {
+    coreDish = coreDish.replace(p.pattern, ' ');
+  });
+  coreDish = coreDish.replace(/\b(rezept|rezepte|gericht|gerichte|essen|kochen|und|oder|sehr|besonders)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+
+  const badges = matchedProfiles.map((p) => p.badge).join(' · ');
+  const ckQueries = [];
+  const blQueries = [];
+
+  matchedProfiles.forEach((p) => {
+    p.chefkochTerms.forEach((term) => {
+      const combined = coreDish ? `${term} ${coreDish}` : term;
+      if (!ckQueries.includes(combined)) ckQueries.push(combined);
+    });
+    p.blogTerms.forEach((term) => {
+      const combined = coreDish ? `${coreDish} ${term}` : term;
+      if (!blQueries.includes(combined)) blQueries.push(combined);
+    });
+  });
+
+  if (coreDish && !blQueries.includes(coreDish)) {
+    blQueries.unshift(coreDish);
+  }
+
+  const primary = matchedProfiles[0];
+  return {
+    isLifestyleQuery: true,
+    badge: badges,
+    chefkochQueries: ckQueries.slice(0, 4),
+    blogQueries: blQueries.slice(0, 3),
+    socialQuery: coreDish ? `${primary.chefkochTerms[0]} ${coreDish}` : primary.chefkochTerms[0],
+    webQuery: coreDish ? `${primary.webSearch} ${coreDish}` : primary.webSearch
+  };
+}
+
+function quickSearchSmartKeyword(term, target = 'import') {
+  if (target === 'planner') {
+    const body = document.getElementById('plannerToolsBody');
+    if (body && body.style.display === 'none') {
+      togglePlannerToolsDrawer();
+    }
+    executePlannerOnlineSearch(term);
+    return;
+  }
+  const inp = document.getElementById('liveSearchInput');
+  if (inp) {
+    inp.value = term;
+    executeLiveRecipeSearch();
+  }
+}
 
 function setLiveSearchSource(src) {
   state.liveSearchSource = src;
@@ -8195,9 +8455,10 @@ function setLiveSearchSource(src) {
 function searchOnlineFromHome() {
   const homeQ = document.getElementById('homeSearchInput')?.value?.trim() || state.searchQuery || '';
   switchTab('import');
+  setImportSubTab('web');
   const liveInp = document.getElementById('liveSearchInput');
   if (liveInp) {
-    liveInp.value = homeQ || 'Pasta';
+    liveInp.value = homeQ || 'Gesund & Eiweißreich';
     executeLiveRecipeSearch();
   }
 }
@@ -8208,17 +8469,19 @@ async function executeLiveRecipeSearch() {
   if (!inp || !box) return;
   const query = inp.value.trim();
   if (!query) {
-    showToast('Bitte einen Suchbegriff eingeben (z.B. Gulasch, Lasagne, Pfannkuchen)');
+    showToast('Bitte ein Gericht oder Schlagwort eingeben (z.B. gesund, eiweißreich, Lasagne)');
     return;
   }
+
+  const expanded = expandSmartRecipeSearchQueries(query);
 
   box.innerHTML = `
     <div style="text-align:center; padding:18px 10px; font-size:13px; color:var(--text-muted);">
       ⏳ Durchsuche live ${
         state.liveSearchSource === 'all'
-          ? 'Chefkoch, Instagram Reels, Facebook & Foodblogs'
+          ? 'Chefkoch, Foodblogs & Social Media'
           : state.liveSearchSource.toUpperCase()
-      } nach <strong>"${escapeHtml(query)}"</strong>...
+      } nach ${expanded.badge ? `<strong style="color:#6ee7b7;">${escapeHtml(expanded.badge)}</strong> · ` : ''}<strong>"${escapeHtml(query)}"</strong>...
     </div>
   `;
 
@@ -8226,23 +8489,37 @@ async function executeLiveRecipeSearch() {
   const tasks = [];
 
   if (src === 'all' || src === 'chefkoch') {
-    tasks.push(searchChefkochLive(query));
+    expanded.chefkochQueries.slice(0, 3).forEach((cq) => {
+      tasks.push(searchChefkochLive(cq, expanded.badge));
+    });
   }
   if (src === 'all' || src === 'blogs') {
-    tasks.push(searchFoodblogsLive(query));
+    expanded.blogQueries.slice(0, 3).forEach((bq) => {
+      tasks.push(searchFoodblogsLive(bq, expanded.badge));
+    });
+    if (expanded.isLifestyleQuery) {
+      tasks.push(searchWebRecipesSmartFallback(expanded.webQuery, expanded.badge));
+    }
   }
   if (src === 'all' || src === 'instagram') {
-    tasks.push(searchSocialReelsLive(query, 'instagram'));
+    tasks.push(searchSocialReelsLive(expanded.socialQuery || query, 'instagram', expanded.badge));
   }
   if (src === 'all' || src === 'facebook') {
-    tasks.push(searchSocialReelsLive(query, 'facebook'));
+    tasks.push(searchSocialReelsLive(expanded.socialQuery || query, 'facebook', expanded.badge));
   }
 
   const settled = await Promise.allSettled(tasks);
-  let combined = [];
+  const combined = [];
+  const seenUrls = new Set();
   settled.forEach((res) => {
     if (res.status === 'fulfilled' && Array.isArray(res.value)) {
-      combined = combined.concat(res.value);
+      res.value.forEach((item) => {
+        const uKey = normalizeUrlForRecipeMatch(item.url);
+        if (uKey && !seenUrls.has(uKey)) {
+          seenUrls.add(uKey);
+          combined.push(item);
+        }
+      });
     }
   });
 
@@ -8250,8 +8527,8 @@ async function executeLiveRecipeSearch() {
   renderLiveSearchResults();
 }
 
-async function searchChefkochLive(query) {
-  const apiUrl = `https://api.chefkoch.de/v2/recipes?query=${encodeURIComponent(query)}&limit=6`;
+async function searchChefkochLive(query, smartBadge = '') {
+  const apiUrl = `https://api.chefkoch.de/v2/recipes?query=${encodeURIComponent(query)}&limit=8`;
   try {
     let data = null;
     try {
@@ -8268,15 +8545,20 @@ async function searchChefkochLive(query) {
       const img = r.previewImageUrlTemplate
         ? r.previewImageUrlTemplate.replace('<format>', 'crop-480x360')
         : 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=600&q=80';
+      const kcal = r.nutrition?.kCalories ? `${Math.round(r.nutrition.kCalories)} kcal` : '';
+      const protein = r.nutrition?.proteinContent ? `${Math.round(r.nutrition.proteinContent)}g Eiweiß` : '';
+      const nutriSummary = [kcal, protein].filter(Boolean).join(' · ');
       return {
         provider: 'Chefkoch',
         badgeIcon: '👨‍🍳 Chefkoch',
+        smartBadge: smartBadge || '',
+        nutriInfo: nutriSummary,
         title: r.title || 'Chefkoch Rezept',
         url: r.siteUrl || `https://www.chefkoch.de/rezepte/${r.id}`,
         imageUrl: img,
         prepTime: r.totalTime || r.preparationTime || 25,
         rating: r.rating?.rating ? r.rating.rating.toFixed(1) : '4.7',
-        snippet: r.subtitle || '1:1 Original-Rezept von Chefkoch.de'
+        snippet: r.subtitle || (nutriSummary ? `Nährwerte pro Portion: ${nutriSummary}` : '1:1 Original-Rezept von Chefkoch.de')
       };
     });
   } catch (_) {
@@ -8284,16 +8566,17 @@ async function searchChefkochLive(query) {
   }
 }
 
-async function searchFoodblogsLive(query) {
+async function searchFoodblogsLive(query, smartBadge = '') {
   const blogs = [
     { name: 'Gaumenfreundin', base: 'https://www.gaumenfreundin.de' },
-    { name: 'Emmi kocht einfach', base: 'https://emmikochteinfach.de' }
+    { name: 'Emmi kocht einfach', base: 'https://emmikochteinfach.de' },
+    { name: 'Familienkost', base: 'https://www.familienkost.de' }
   ];
   const results = [];
   await Promise.allSettled(
     blogs.map(async (b) => {
       try {
-        const res = await fetch(`${b.base}/wp-json/wp/v2/posts?search=${encodeURIComponent(query)}&per_page=3&_embed=1`);
+        const res = await fetch(`${b.base}/wp-json/wp/v2/posts?search=${encodeURIComponent(query)}&per_page=4&_embed=1`);
         if (!res.ok) return;
         const posts = await res.json();
         const parser = new DOMParser();
@@ -8306,6 +8589,8 @@ async function searchFoodblogsLive(query) {
           results.push({
             provider: b.name,
             badgeIcon: `🥘 ${b.name}`,
+            smartBadge: smartBadge || '',
+            nutriInfo: '',
             title: cleanTitle,
             url: p.link,
             imageUrl: img,
@@ -8320,7 +8605,46 @@ async function searchFoodblogsLive(query) {
   return results;
 }
 
-async function searchSocialReelsLive(query, platform) {
+async function searchWebRecipesSmartFallback(searchQuery, smartBadge = '') {
+  try {
+    const q = `${searchQuery} (site:eatsmarter.de OR site:chefkoch.de/rezepte OR site:lecker.de OR site:gaumenfreundin.de)`;
+    const ddgLiteUrl = `https://r.jina.ai/https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`;
+    const res = await fetch(ddgLiteUrl, { headers: { Accept: 'application/json' } });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const content = json?.data?.content || '';
+    const entries = [];
+    const regex = /\d+\.\[(.*?)\]\((https:\/\/duckduckgo\.com\/l\/\?uddg=([^)&]+)[^)]*)\)\s*([\s\S]*?)(?=\n\d+\.\[|$)/g;
+    let m;
+    while ((m = regex.exec(content)) !== null && entries.length < 6) {
+      const rawTitle = m[1].replace(/\s*[-|–•].*$/, '').replace(/\s+/g, ' ').trim();
+      const targetUrl = decodeURIComponent(m[3]);
+      const rawSnippet = m[4].replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
+      if (/\/(kategorie|suche|thema|sammlung|magazin)\b/i.test(targetUrl)) continue;
+      let hostLabel = 'Rezept-Portal';
+      try {
+        hostLabel = new URL(targetUrl).hostname.replace(/^www\./i, '');
+      } catch (_) {}
+      entries.push({
+        provider: hostLabel,
+        badgeIcon: `🥗 ${hostLabel}`,
+        smartBadge: smartBadge || '',
+        nutriInfo: '',
+        title: rawTitle.slice(0, 85),
+        url: targetUrl,
+        imageUrl: 'https://images.unsplash.com/photo-1490645935967-10de6ba17061?auto=format&fit=crop&w=600&q=80',
+        prepTime: 25,
+        rating: 'Top',
+        snippet: rawSnippet.slice(0, 180)
+      });
+    }
+    return entries;
+  } catch (_) {
+    return [];
+  }
+}
+
+async function searchSocialReelsLive(query, platform, smartBadge = '') {
   try {
     const siteFilter = platform === 'instagram' ? 'site:instagram.com/reel' : 'site:facebook.com';
     const searchQ = `${siteFilter} Rezept ${query}`;
@@ -8331,7 +8655,6 @@ async function searchSocialReelsLive(query, platform) {
     const content = json?.data?.content || '';
 
     const entries = [];
-    // Parse Markdown links + snippets returned by DuckDuckGo Lite
     const regex = /\d+\.\[(.*?)\]\((https:\/\/duckduckgo\.com\/l\/\?uddg=([^)&]+)[^)]*)\)\s*([\s\S]*?)(?=\n\d+\.\[|$)/g;
     let m;
     while ((m = regex.exec(content)) !== null && entries.length < 5) {
@@ -8342,6 +8665,8 @@ async function searchSocialReelsLive(query, platform) {
         entries.push({
           provider: platform === 'instagram' ? 'Instagram' : 'Facebook',
           badgeIcon: platform === 'instagram' ? '📸 Instagram Reel' : '📹 Facebook Video',
+          smartBadge: smartBadge || '',
+          nutriInfo: '',
           title: rawTitle.slice(0, 85),
           url: targetUrl,
           imageUrl:
@@ -8367,7 +8692,7 @@ function renderLiveSearchResults() {
   if (!state.liveSearchResults || state.liveSearchResults.length === 0) {
     box.innerHTML = `
       <div style="text-align:center; padding:14px; font-size:12.5px; color:var(--text-muted);">
-        Keine Online-Treffer gefunden. Probiere einen anderen Begriff (z.B. "Pasta", "Hähnchen", "Kuchen").
+        Keine Online-Treffer gefunden. Probiere z.B. <strong>„eiweißreich“</strong>, <strong>„gesund“</strong>, <strong>„Low Carb“</strong> oder <strong>„Pasta“</strong>.
       </div>
     `;
     return;
@@ -8378,10 +8703,14 @@ function renderLiveSearchResults() {
       const alreadySaved = state.recipes.some((r) => r.sourceUrl === item.url);
       return `
         <div class="section-card" style="padding:11px; margin-bottom:9px; background:#0b1120; display:flex; gap:11px; align-items:flex-start;">
-          <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.title)}" style="width:68px; height:68px; border-radius:12px; object-fit:cover; flex-shrink:0;" onerror="this.src='https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=400&q=80'" />
+          <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.title)}" referrerpolicy="no-referrer" style="width:68px; height:68px; border-radius:12px; object-fit:cover; flex-shrink:0;" onerror="this.src='https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=400&q=80'" />
           <div style="flex:1; min-width:0;">
-            <div style="font-size:10.5px; font-weight:700; color:var(--primary-light); margin-bottom:2px;">
-              ${escapeHtml(item.badgeIcon)} · ★ ${escapeHtml(String(item.rating))}
+            <div style="display:flex; gap:5px; flex-wrap:wrap; align-items:center; margin-bottom:3px;">
+              <span style="font-size:10.5px; font-weight:700; color:var(--primary-light);">
+                ${escapeHtml(item.badgeIcon)} · ★ ${escapeHtml(String(item.rating))} · ⏱ ${item.prepTime || 25} Min
+              </span>
+              ${item.smartBadge ? `<span class="tag-mini" style="background:rgba(16,185,129,0.2); color:#6ee7b7; font-weight:700;">${escapeHtml(item.smartBadge)}</span>` : ''}
+              ${item.nutriInfo ? `<span class="tag-mini tag-kcal">${escapeHtml(item.nutriInfo)}</span>` : ''}
             </div>
             <div style="font-size:13.5px; font-weight:700; margin-bottom:4px; line-height:1.25;">${escapeHtml(item.title)}</div>
             ${
@@ -8396,7 +8725,7 @@ function renderLiveSearchResults() {
                 style="background:${alreadySaved ? 'var(--bg-elevated)' : 'var(--primary)'}; color:#fff; border:none; font-size:11px; padding:6px 11px;"
                 onclick="importLiveSearchResult(${idx})"
               >
-                ${alreadySaved ? '✓ Gespeichert (Öffnen)' : '＋ 1:1 in App hinzufügen'}
+                ${alreadySaved ? '✓ Gespeichert (Öffnen)' : '＋ 1:1 speichern'}
               </button>
               <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="pill-btn" style="text-decoration:none; color:var(--text-muted); font-size:11px; padding:5px 9px;">
                 🔗 Original ↗
@@ -8495,8 +8824,8 @@ async function downloadStandaloneAppFile() {
   try {
     showToast('📦 Erstelle eigenständige App-Datei zum direkten Download...');
     const [cssRes, jsRes] = await Promise.all([
-      fetch('./styles.css?v=45').then((r) => r.text()).catch(() => ''),
-      fetch('./app.js?v=45').then((r) => r.text()).catch(() => '')
+      fetch('./styles.css?v=46').then((r) => r.text()).catch(() => ''),
+      fetch('./app.js?v=46').then((r) => r.text()).catch(() => '')
     ]);
 
     const currentDoc = document.documentElement.outerHTML;
@@ -9385,26 +9714,29 @@ function isBrochureDateExpired(validUntilStr) {
 
 ALL_RETAILERS_META.forEach((meta) => {
   const liveInfo = KAUFDA_LIVE_BROCHURE_PAGES[meta.id];
-  if (liveInfo && !isBrochureDateExpired(liveInfo.validUntil)) {
-    meta.contentId = liveInfo.contentId;
+  if (liveInfo) {
+    // Behalte die hochauflösenden Einzelseiten immer als sofort sichtbaren Offline-/Sofort-Fallback bereit,
+    // damit beim Öffnen NIEMALS eine leere Seite erscheint – und markiere abgelaufene Wochen für das sofortige Live-Update!
+    meta.fallbackContentId = liveInfo.contentId;
+    meta.fallbackPageUuids = liveInfo.pageUuids;
     meta.coverUrl = liveInfo.coverUrl;
     meta.highResCoverUrl = liveInfo.highResCoverUrl;
     meta.pages = `${liveInfo.pageCount} Seiten`;
     meta.pageUuids = liveInfo.pageUuids;
-    meta.validFrom = liveInfo.validFrom;
-    meta.validUntil = liveInfo.validUntil;
-    meta.kaufdaUrl = `https://www.kaufda.de/contentViewer/static/${liveInfo.contentId}?page=1`;
-    meta.brochureUrl = meta.kaufdaUrl;
-  } else {
-    // Veraltete Vorwochen-UUIDs verwerfen, damit immer das Prospekt der aktuellen Kalenderwoche geladen wird!
-    meta.contentId = '';
-    meta.pageUuids = [];
-    meta.pages = 'Aktuelle KW';
-    meta.validFrom = '';
-    meta.validUntil = '';
-    meta.needsCurrentWeekFetch = true;
-    meta.kaufdaUrl = meta.cityUrl || `https://www.kaufda.de/Geschaefte/${encodeURIComponent(meta.kaufdaSlug || meta.id)}`;
-    meta.brochureUrl = meta.kaufdaUrl;
+    if (!isBrochureDateExpired(liveInfo.validUntil)) {
+      meta.contentId = liveInfo.contentId;
+      meta.validFrom = liveInfo.validFrom;
+      meta.validUntil = liveInfo.validUntil;
+      meta.kaufdaUrl = `https://www.kaufda.de/contentViewer/static/${liveInfo.contentId}?page=1`;
+      meta.brochureUrl = meta.kaufdaUrl;
+    } else {
+      meta.contentId = liveInfo.contentId;
+      meta.validFrom = '';
+      meta.validUntil = '';
+      meta.needsCurrentWeekFetch = true;
+      meta.kaufdaUrl = meta.cityUrl || `https://www.kaufda.de/Geschaefte/${encodeURIComponent(meta.kaufdaSlug || meta.id)}`;
+      meta.brochureUrl = meta.kaufdaUrl;
+    }
   }
 });
 
@@ -9713,18 +10045,11 @@ function selectBestHighResBrochurePageUrl(imagesArr, fallbackUrl) {
 function buildVerifiedHighResPagesForRetailer(retMeta) {
   const baseMeta = ALL_RETAILERS_META.find((r) => r.id === retMeta.id) || retMeta;
   const liveInfo = KAUFDA_LIVE_BROCHURE_PAGES[retMeta.id] || KAUFDA_LIVE_BROCHURE_PAGES[baseMeta.id];
-  const validLiveUuids =
-    liveInfo && !isBrochureDateExpired(liveInfo.validUntil) && Array.isArray(liveInfo.pageUuids)
-      ? liveInfo.pageUuids
-      : [];
   const uuids =
-    (Array.isArray(retMeta.pageUuids) && retMeta.pageUuids.length > 0 && !isBrochureDateExpired(retMeta.validUntil)
-      ? retMeta.pageUuids
-      : null) ||
-    (Array.isArray(baseMeta.pageUuids) && baseMeta.pageUuids.length > 0 && !isBrochureDateExpired(baseMeta.validUntil)
-      ? baseMeta.pageUuids
-      : null) ||
-    validLiveUuids;
+    (Array.isArray(retMeta.pageUuids) && retMeta.pageUuids.length > 0 ? retMeta.pageUuids : null) ||
+    (Array.isArray(baseMeta.pageUuids) && baseMeta.pageUuids.length > 0 ? baseMeta.pageUuids : null) ||
+    (Array.isArray(retMeta.fallbackPageUuids) && retMeta.fallbackPageUuids.length > 0 ? retMeta.fallbackPageUuids : null) ||
+    (liveInfo && Array.isArray(liveInfo.pageUuids) ? liveInfo.pageUuids : []);
 
   if (Array.isArray(uuids) && uuids.length > 0) {
     return uuids.map((uuid, idx) => ({
@@ -9732,18 +10057,18 @@ function buildVerifiedHighResPagesForRetailer(retMeta) {
       largeUrl: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_${idx}.jpg?impolicy=large`,
       ultraHdUrl: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_${idx}.jpg?impolicy=zoomlarge`,
       imageUrl: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_${idx}.jpg?impolicy=large`,
-      fallbackLargeUrl: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_${idx}.jpg?impolicy=large`,
+      fallbackLargeUrl: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_0.jpg?impolicy=large`,
       offers: []
     }));
   }
 
-  if (!retMeta.contentId) {
+  const rawCover = retMeta.coverUrl || retMeta.highResCoverUrl || baseMeta.coverUrl || '';
+  if (!rawCover || rawCover.includes('images.unsplash.com')) {
     return [];
   }
 
-  const singleLarge = upgradeKaufdaPageImageUrl(retMeta.coverUrl || retMeta.highResCoverUrl, false);
-  const singleUltra = upgradeKaufdaPageImageUrl(retMeta.highResCoverUrl || retMeta.coverUrl, true);
-  if (!singleLarge) return [];
+  const singleLarge = upgradeKaufdaPageImageUrl(rawCover, false);
+  const singleUltra = upgradeKaufdaPageImageUrl(retMeta.highResCoverUrl || rawCover, true);
   return [
     {
       number: 0,
@@ -9754,6 +10079,103 @@ function buildVerifiedHighResPagesForRetailer(retMeta) {
       offers: []
     }
   ];
+}
+
+// Direkter Browser-Loader für KaufDA-Einzelseiten (funktioniert auch ohne Backend / Edge Function!)
+async function fetchBrochurePagesDirectFromWeb(cid) {
+  if (!cid) return null;
+  const apiTarget = `https://content-viewer-be.kaufda.de/v1/brochures/${encodeURIComponent(cid)}?partner=kaufda_web`;
+
+  const parseViewerJson = (rawObj) => {
+    const content = rawObj?.content || rawObj;
+    const pagesArr = Array.isArray(content?.pages)
+      ? content.pages
+      : Array.isArray(content?.pages?.contents)
+        ? content.pages.contents
+        : [];
+    if (pagesArr.length === 0) return null;
+    return {
+      contentId: cid,
+      title: content?.title || '',
+      publisherName: content?.publisher?.name || '',
+      validFrom: content?.validFrom || '',
+      validUntil: content?.validUntil || '',
+      pages: pagesArr
+    };
+  };
+
+  // Versuch A: Direkter Abruf der KaufDA Viewer-JSON API
+  try {
+    const directRes = await fetch(apiTarget, { headers: { Accept: 'application/json' } });
+    if (directRes.ok) {
+      const parsed = parseViewerJson(await directRes.json());
+      if (parsed) return parsed;
+    }
+  } catch (_) {}
+
+  // Versuch B: Über unsere CORS-Fallback-Kette (AllOrigins / CodeTabs / CorsProxy)
+  try {
+    const proxyTxt = await fetchUrlContentWithCorsFallback(apiTarget);
+    if (proxyTxt && proxyTxt.trim().startsWith('{')) {
+      const parsed = parseViewerJson(JSON.parse(proxyTxt));
+      if (parsed) return parsed;
+    }
+  } catch (_) {}
+
+  // Versuch C: Extrahiere alle Seiten-UUIDs aus dem statischen KaufDA ContentViewer über CORS-Proxy oder Jina
+  const viewerPageUrl = `https://www.kaufda.de/contentViewer/static/${encodeURIComponent(cid)}?page=1`;
+  const textCandidates = [];
+  try {
+    const htmlViaProxy = await fetchUrlContentWithCorsFallback(viewerPageUrl);
+    if (htmlViaProxy) textCandidates.push(htmlViaProxy);
+  } catch (_) {}
+  if (textCandidates.length === 0) {
+    try {
+      const jRes = await fetch(`https://r.jina.ai/${viewerPageUrl}`, { headers: { Accept: 'application/json' } });
+      if (jRes.ok) {
+        const jData = await jRes.json();
+        if (jData?.data?.content) textCandidates.push(jData.data.content);
+      }
+    } catch (_) {}
+  }
+
+  for (const rawTxt of textCandidates) {
+    const seenUuids = [];
+    const rx = /content-media\.bonial\.biz\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/(?:zoomlarge_)?page_(\d+)/gi;
+    const byPage = new Map();
+    let m;
+    while ((m = rx.exec(rawTxt)) !== null) {
+      const u = m[1];
+      const pIdx = parseInt(m[2], 10);
+      if (!isNaN(pIdx) && !byPage.has(pIdx)) byPage.set(pIdx, u);
+    }
+    if (byPage.size > 0) {
+      const sortedIdx = Array.from(byPage.keys()).sort((a, b) => a - b);
+      sortedIdx.forEach((k) => seenUuids.push(byPage.get(k)));
+    } else {
+      const genericRx = /content-media\.bonial\.biz\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//gi;
+      while ((m = genericRx.exec(rawTxt)) !== null) {
+        if (m[1] && !seenUuids.includes(m[1])) seenUuids.push(m[1]);
+      }
+    }
+    if (seenUuids.length > 0) {
+      return {
+        contentId: cid,
+        title: '',
+        publisherName: '',
+        validFrom: '',
+        validUntil: '',
+        pages: seenUuids.map((uuid, idx) => ({
+          number: idx,
+          images: [
+            { url: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_${idx}.jpg?impolicy=large`, size: '1600x1600' },
+            { url: `https://content-media.bonial.biz/${uuid}/zoomlarge_page_${idx}.jpg?impolicy=zoomlarge`, size: '2800x2800' }
+          ]
+        }))
+      };
+    }
+  }
+  return null;
 }
 
 let brochureTouchStartX = 0;
@@ -10016,12 +10438,10 @@ function renderBrochureReaderModalContent() {
     }
   });
 
-  const zoomImgStyle =
-    zoomLevel === 2
-      ? 'width:165%; max-width:none; max-height:none; height:auto; object-fit:contain; image-rendering:auto; cursor:zoom-out; display:block; margin:0 auto;'
-      : zoomLevel === 1
-      ? 'width:130%; max-width:none; max-height:none; height:auto; object-fit:contain; image-rendering:auto; cursor:zoom-in; display:block; margin:0 auto;'
-      : 'width:100%; height:100%; max-width:100%; max-height:100%; min-width:0; min-height:0; object-fit:contain; image-rendering:auto; cursor:default; display:block; margin:auto;';
+  const zoomStageClass = zoomLevel === 2 ? 'zoomed-2' : zoomLevel === 1 ? 'zoomed-1' : '';
+  const zoomImgStyle = isZoomed
+    ? 'width:100%; height:auto; max-width:none; max-height:none; object-fit:contain; display:block; margin:0 auto; cursor:crosshair; background:#fff; border-radius:8px;'
+    : 'max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; display:block; margin:auto; cursor:crosshair; background:#fff; border-radius:8px;';
 
   const retailerOffers = (state.offers || []).filter(
     (o) => normalizeRetailerId(o.retailer) === reader.retailerId
@@ -10105,12 +10525,13 @@ function renderBrochureReaderModalContent() {
       title="Auf Artikel tippen zum Markieren · Wischen zum Blättern"
     >
       <button type="button" class="brochure-side-nav prev" onclick="event.stopPropagation(); stepBrochureReaderPage(-1)" ${idx <= 0 ? 'disabled' : ''} aria-label="Vorherige Seite">‹</button>
-      <div id="brochureTapStage" style="position:relative; display:inline-block; margin:auto; max-width:${isZoomed ? 'none' : '100%'}; max-height:${isZoomed ? 'none' : '100%'};" onclick="onBrochurePageTap(event)">
+      <div id="brochureTapStage" class="brochure-stage-wrap ${zoomStageClass}" onclick="onBrochurePageTap(event)">
         <img
           id="brochureReaderActiveImg"
           src="${escapeHtml(activeImgSrc)}"
           alt="${escapeHtml(reader.retailerMeta.label)} Prospekt Seite ${idx + 1}"
-          style="${zoomImgStyle}; cursor:crosshair;"
+          style="${zoomImgStyle}"
+          referrerpolicy="no-referrer"
           decoding="async"
           onerror="if(this.dataset.fallbackTried!=='1'){this.dataset.fallbackTried='1';this.src='${escapeHtml(currentPage.ultraHdUrl || currentPage.fallbackLargeUrl || reader.retailerMeta.highResCoverUrl || reader.retailerMeta.coverUrl)}';}"
         />
@@ -10278,15 +10699,21 @@ function saveBrochurePinsToStorage() {
 async function onBrochurePageTap(event) {
   const reader = state.activeBrochureReader;
   if (!reader) return;
+  const stageEl = document.getElementById('brochureTapStage');
   const imgEl = document.getElementById('brochureReaderActiveImg');
-  if (!imgEl) return;
-  const rect = imgEl.getBoundingClientRect();
-  if (!rect.width || !rect.height) return;
+  if (!stageEl || !imgEl) return;
+  const stageRect = stageEl.getBoundingClientRect();
+  const imgRect = imgEl.getBoundingClientRect();
+  if (!stageRect.width || !stageRect.height) return;
 
-  const clientX = event.clientX ?? (event.changedTouches && event.changedTouches[0]?.clientX) ?? rect.left + rect.width / 2;
-  const clientY = event.clientY ?? (event.changedTouches && event.changedTouches[0]?.clientY) ?? rect.top + rect.height / 2;
-  const xPct = Math.round(Math.max(4, Math.min(96, ((clientX - rect.left) / rect.width) * 100)) * 10) / 10;
-  const yPct = Math.round(Math.max(4, Math.min(96, ((clientY - rect.top) / rect.height) * 100)) * 10) / 10;
+  const clientX = event.clientX ?? (event.changedTouches && event.changedTouches[0]?.clientX) ?? imgRect.left + imgRect.width / 2;
+  const clientY = event.clientY ?? (event.changedTouches && event.changedTouches[0]?.clientY) ?? imgRect.top + imgRect.height / 2;
+  // Position für den sichtbaren Pin-Marker relativ zu #brochureTapStage
+  const xPct = Math.round(Math.max(4, Math.min(96, ((clientX - stageRect.left) / stageRect.width) * 100)) * 10) / 10;
+  const yPct = Math.round(Math.max(4, Math.min(96, ((clientY - stageRect.top) / stageRect.height) * 100)) * 10) / 10;
+  // Position relativ zum tatsächlichen Prospektbild für den KI-Bildausschnitt
+  const imgXPct = imgRect.width > 0 ? Math.max(4, Math.min(96, ((clientX - imgRect.left) / imgRect.width) * 100)) : xPct;
+  const imgYPct = imgRect.height > 0 ? Math.max(4, Math.min(96, ((clientY - imgRect.top) / imgRect.height) * 100)) : yPct;
 
   const hasAiKey = Boolean(state.household?.geminiKey && state.household.geminiKey.trim().length > 10);
   reader.pendingTap = {
@@ -10309,7 +10736,7 @@ async function onBrochurePageTap(event) {
   }, 40);
 
   if (hasAiKey) {
-    detectTappedBrochureItemWithAI(imgEl.src, xPct, yPct, reader.pageIndex || 0).catch(() => {});
+    detectTappedBrochureItemWithAI(imgEl.src, imgXPct, imgYPct, reader.pageIndex || 0).catch(() => {});
   }
 }
 
@@ -11499,7 +11926,7 @@ async function fetchLiveBrochureForRetailer(b) {
     } catch (_) {}
   }
 
-  // 2. Mehrstufiger Browser-Fallback via r.jina.ai (entdeckt aktuelle KW contentId + Titelbild für V-Markt, REWE & alle Händler!)
+  // 2. Mehrstufiger Browser-Fallback via CORS-Proxy & r.jina.ai (entdeckt aktuelle KW contentId + ALLE Einzelseiten für V-Markt, REWE & alle Händler!)
   const discoveryUrls = [
     cityUrl,
     meinprospektUrl,
@@ -11508,21 +11935,32 @@ async function fetchLiveBrochureForRetailer(b) {
 
   for (const discoveryUrl of discoveryUrls) {
     try {
-      const jinaRes = await fetch(`https://r.jina.ai/${discoveryUrl}`, {
-        headers: { Accept: 'application/json' }
-      });
-      if (!jinaRes.ok) continue;
-      const jinaJson = await jinaRes.json();
-      const text = jinaJson?.data?.content || '';
+      let text = '';
+      try {
+        text = (await fetchUrlContentWithCorsFallback(discoveryUrl)) || '';
+      } catch (_) {}
+      if (!text) {
+        const jinaRes = await fetch(`https://r.jina.ai/${discoveryUrl}`, {
+          headers: { Accept: 'application/json' }
+        });
+        if (jinaRes.ok) {
+          const jinaJson = await jinaRes.json();
+          text = jinaJson?.data?.content || '';
+        }
+      }
+      if (!text) continue;
+
       const cidMatches = [
         ...text.matchAll(/contentViewer\/static\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi),
+        ...text.matchAll(/"contentId"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/gi),
         ...text.matchAll(/brochures\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)
       ];
       const coverImgMatch = text.match(/https:\/\/content-media\.bonial\.biz\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/[^\s)"']+/i);
 
       if (cidMatches.length > 0 || coverImgMatch) {
+        let foundCid = '';
         if (cidMatches.length > 0 && cidMatches[0][1]) {
-          const foundCid = cidMatches[0][1];
+          foundCid = cidMatches[0][1];
           b.contentId = foundCid;
           const directViewer = `https://www.kaufda.de/contentViewer/static/${foundCid}?page=1`;
           b.kaufdaUrl = directViewer;
@@ -11532,7 +11970,28 @@ async function fetchLiveBrochureForRetailer(b) {
           const baseCover = coverImgMatch[0].split('?')[0];
           b.coverUrl = `${baseCover}?impolicy=large`;
           b.highResCoverUrl = `${baseCover}?impolicy=zoomlarge`;
-          if (!Array.isArray(b.pageUuids) || b.pageUuids.length === 0) {
+        }
+        // Lade jetzt zusätzlich direkt im Browser alle Einzelseiten dieses Prospekts!
+        if (foundCid) {
+          const webBrochure = await fetchBrochurePagesDirectFromWeb(foundCid);
+          if (webBrochure && Array.isArray(webBrochure.pages) && webBrochure.pages.length > 0) {
+            const uuids = [];
+            webBrochure.pages.forEach((pg, pgIdx) => {
+              const u = selectBestHighResBrochurePageUrl(pg.images || [], '');
+              const m = String(u || '').match(/content-media\.bonial\.biz\/([0-9a-f-]{36})\//i);
+              if (m && m[1]) uuids.push(m[1]);
+              if (pgIdx === 0 && u) {
+                b.coverUrl = upgradeKaufdaPageImageUrl(u, false);
+                b.highResCoverUrl = upgradeKaufdaPageImageUrl(u, true);
+              }
+            });
+            if (uuids.length > 0) {
+              b.pageUuids = uuids;
+              b.pages = `${uuids.length} Seiten`;
+            }
+            if (webBrochure.validFrom) b.validFrom = webBrochure.validFrom;
+            if (webBrochure.validUntil) b.validUntil = webBrochure.validUntil;
+          } else if (coverImgMatch && coverImgMatch[1] && (!Array.isArray(b.pageUuids) || b.pageUuids.length === 0)) {
             b.pageUuids = [coverImgMatch[1]];
           }
         }

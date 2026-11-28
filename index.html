@@ -9,13 +9,13 @@
   <meta name="apple-mobile-web-app-title" content="KochTresor" />
   <title>KochTresor – Gemeinsame Rezepte & Koch-App</title>
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=45" />
+  <link rel="stylesheet" href="./styles.css?v=46" />
 </head>
 <body>
   <div id="toast" class="toast">Gespeichert!</div>
 
   <div class="app-shell">
-    <!-- Top Smartphone Header -->
+    <!-- Top Smartphone Header (Einzeilig & aufgeräumt) -->
     <header class="app-header">
       <div class="brand">
         <div class="brand-logo">🍲</div>
@@ -30,9 +30,6 @@
       <div class="header-actions">
         <button class="pill-btn header-pill-btn" onclick="openKitchenToolsModal()" title="Küchen-Tools, Backform- & Airfryer-Rechner">
           <span>🧮</span><span>Tools</span>
-        </button>
-        <button class="pill-btn header-pill-btn" onclick="downloadStandaloneAppFile()" title="App direkt als Datei herunterladen">
-          <span>📲</span><span>App</span>
         </button>
         <button class="pill-btn header-pill-btn" onclick="pullHouseholdCloudState(true)" title="Jetzt synchronisieren">
           <span>🔄</span><span>Sync</span>
@@ -58,7 +55,7 @@
               id="homeSearchInput"
               type="text"
               class="search-input"
-              placeholder="Rezept oder Zutat suchen..."
+              placeholder="Gericht, Zutat, gesund, eiweißreich..."
               oninput="state.searchQuery = this.value; renderRecipes()"
               onkeydown="if(event.key==='Enter' && this.value.trim()) searchOnlineFromHome()"
             />
@@ -130,11 +127,7 @@
               <button class="view-mode-btn" data-vmode="list" onclick="setRecipeViewMode('list')" title="Platzsparende Schnell-Liste">📋 Liste</button>
             </div>
           </div>
-          <div style="display:flex; align-items:center; gap:6px;">
-            <button class="carousel-nav-btn" onclick="scrollCategoryChipRow(-160)" title="Kategorien nach links">‹</button>
-            <div id="categoryChips" class="chip-row" style="flex:1; margin-bottom:0;"></div>
-            <button class="carousel-nav-btn" onclick="scrollCategoryChipRow(160)" title="Kategorien nach rechts">›</button>
-          </div>
+          <div id="categoryChips" class="chip-row" style="margin-bottom:0;"></div>
         </div>
 
         <div id="recipeList"></div>
@@ -252,17 +245,30 @@
           <div class="section-desc">
             Durchsuche live <strong>Chefkoch</strong>, <strong>Foodblogs</strong>, <strong>Instagram Reels</strong> & <strong>Facebook</strong> und übernimm gefundene Rezepte mit 1 Klick 1:1 in deine App:
           </div>
-          <div class="btn-row" style="margin-bottom:9px;">
+          <div class="btn-row" style="margin-bottom:8px;">
             <input
               id="liveSearchInput"
               type="text"
               class="text-input"
-              placeholder="z.B. Gulasch, Käsekuchen, Kürbis Pasta..."
+              placeholder="z.B. gesund, eiweißreich, Low Carb, Lasagne..."
               onkeydown="if(event.key==='Enter') executeLiveRecipeSearch()"
             />
             <button class="btn btn-primary" style="width:auto; padding:0 16px; white-space:nowrap;" onclick="executeLiveRecipeSearch()">
               🔍 Suchen
             </button>
+          </div>
+          <!-- 1-Tipp Ernährungs- & Lifestyle-Schlagwörter -->
+          <div class="chip-row" style="margin-bottom:8px;">
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Eiweißreich', 'import')">💪 Eiweißreich</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Gesund', 'import')">🥗 Gesund</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Kalorienarm', 'import')">🔥 Kalorienarm</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Low Carb', 'import')">🥑 Low Carb</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Schnell 20 Min', 'import')">⚡ Schnell</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Vegetarisch', 'import')">🥦 Vegetarisch</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Vegan', 'import')">🌱 Vegan</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Airfryer', 'import')">🍟 Airfryer</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('One Pot', 'import')">🍲 One Pot</button>
+            <button type="button" class="chip" onclick="quickSearchSmartKeyword('Meal Prep', 'import')">🍱 Meal Prep</button>
           </div>
           <div id="liveSearchSourceChips" class="chip-row" style="margin-bottom:8px;">
             <button class="chip active" data-src="all" onclick="setLiveSearchSource('all')">🌐 Alle Quellen</button>
@@ -379,43 +385,60 @@
         </div>
       </section>
 
-      <!-- TAB 3: GEMEINSAMER WOCHENPLANER -->
+      <!-- TAB 3: GEMEINSAMER WOCHENPLANER (AUFGERÄUMT & EINKLAPPBAR) -->
       <section id="tab-planner" class="tab-view">
-        <div class="section-card">
-          <div class="section-title">📅 Gemeinsamer Wochenplan</div>
-          <div class="section-desc">
-            Plant eure Woche gemeinsam im Haushalt. Alle Änderungen sind sofort für alle sichtbar.
-          </div>
-          <div style="margin-bottom:8px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-              <span style="font-size:11px; font-weight:700; color:var(--text-muted);">📆 Tage für KI-Planung wählen:</span>
-              <button type="button" class="pill-btn" style="font-size:10px; padding:2px 7px;" onclick="toggleAllAiWeekPlanDays()">Alle / Werktags</button>
+        <div class="section-card" style="padding:12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+            <div>
+              <div class="section-title" style="margin-bottom:1px;">📅 Gemeinsamer Wochenplan</div>
+              <div style="font-size:11px; color:var(--text-muted);">Synchron im Haushalt · Portionen pro Tag wählbar</div>
             </div>
-            <div id="aiWeekPlanDayChips" style="display:grid; grid-template-columns:repeat(7, 1fr); gap:4px;"></div>
-          </div>
-          <div class="btn-row" style="margin-bottom:8px;">
-            <button id="aiWeekPlanBtn" class="btn btn-accent" style="font-size:12px; padding:10px 8px;" onclick="generateAiWeekPlan()">
-              ✨ KI-Wochenplan erstellen
-            </button>
-            <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="autoFillWeekPlan()" title="Ausgewählte Tage zufällig aus Sammlung füllen">
-              🎲 Zufall
-            </button>
-            <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="clearWeekPlan()" title="Wochenplan leeren">
-              🗑
+            <button type="button" class="pill-btn" style="font-size:11px; padding:5px 10px; color:#93c5fd; border-color:rgba(59,130,246,0.4);" onclick="togglePlannerToolsDrawer()">
+              ✨ <span id="plannerToolsArrow">▲ Einklappen</span>
             </button>
           </div>
-          <div id="aiWeekPlanHint" style="display:none; font-size:11.5px; color:#6ee7b7; margin-bottom:8px; padding:7px 10px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); border-radius:10px;"></div>
 
-          <!-- Direkte Online-Rezeptsuche im Wochenplaner -->
-          <div style="background:rgba(15,23,42,0.75); border:1px solid var(--border); border-radius:12px; padding:9px 10px; margin-bottom:10px;">
-            <div style="font-size:11.5px; font-weight:800; color:#93c5fd; margin-bottom:6px;">🔎 Online-Rezept direkt für den Wochenplan suchen</div>
-            <div class="btn-row" style="gap:6px;">
-              <input id="plannerOnlineSearchInput" type="text" class="text-input" style="padding:8px 10px; font-size:13px;" placeholder="z.B. Lasagne, Lachs, Auflauf..." onkeydown="if(event.key==='Enter') executePlannerOnlineSearch()" />
-              <button id="plannerOnlineSearchBtn" type="button" class="btn btn-primary" style="width:auto; padding:0 12px; font-size:12px; white-space:nowrap;" onclick="executePlannerOnlineSearch()">🔍 Suchen</button>
+          <div id="plannerToolsBody" style="display:block;">
+            <div style="margin-bottom:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+                <span style="font-size:11px; font-weight:700; color:var(--text-muted);">📆 Tage für KI-Planung wählen:</span>
+                <button type="button" class="pill-btn" style="font-size:10px; padding:2px 7px;" onclick="toggleAllAiWeekPlanDays()">Alle / Werktags</button>
+              </div>
+              <div id="aiWeekPlanDayChips" style="display:grid; grid-template-columns:repeat(7, 1fr); gap:4px;"></div>
             </div>
-            <div id="plannerOnlineResultsBox" style="margin-top:6px;"></div>
+            <div class="btn-row" style="margin-bottom:8px;">
+              <button id="aiWeekPlanBtn" class="btn btn-accent" style="font-size:12px; padding:10px 8px;" onclick="generateAiWeekPlan()">
+                ✨ KI-Wochenplan erstellen
+              </button>
+              <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="autoFillWeekPlan()" title="Ausgewählte Tage zufällig aus Sammlung füllen">
+                🎲 Zufall
+              </button>
+              <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="clearWeekPlan()" title="Wochenplan leeren">
+                🗑
+              </button>
+            </div>
+            <div id="aiWeekPlanHint" style="display:none; font-size:11.5px; color:#6ee7b7; margin-bottom:8px; padding:7px 10px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); border-radius:10px;"></div>
+
+            <!-- Direkte Online-Rezeptsuche im Wochenplaner (inkl. Schlagwörter wie gesund & eiweißreich) -->
+            <div style="background:rgba(15,23,42,0.75); border:1px solid var(--border); border-radius:12px; padding:9px 10px; margin-bottom:10px;">
+              <div style="font-size:11.5px; font-weight:800; color:#93c5fd; margin-bottom:6px;">🔎 Online-Rezept direkt für den Wochenplan suchen</div>
+              <div class="btn-row" style="gap:6px; margin-bottom:6px;">
+                <input id="plannerOnlineSearchInput" type="text" class="text-input" style="padding:8px 10px; font-size:13px;" placeholder="z.B. gesund, eiweißreich, Lasagne, Lachs..." onkeydown="if(event.key==='Enter') executePlannerOnlineSearch()" />
+                <button id="plannerOnlineSearchBtn" type="button" class="btn btn-primary" style="width:auto; padding:0 12px; font-size:12px; white-space:nowrap;" onclick="executePlannerOnlineSearch()">🔍 Suchen</button>
+              </div>
+              <div class="chip-row" style="margin-bottom:2px;">
+                <button type="button" class="chip" style="font-size:10.5px; padding:4px 9px;" onclick="quickSearchSmartKeyword('Eiweißreich', 'planner')">💪 Eiweißreich</button>
+                <button type="button" class="chip" style="font-size:10.5px; padding:4px 9px;" onclick="quickSearchSmartKeyword('Gesund', 'planner')">🥗 Gesund</button>
+                <button type="button" class="chip" style="font-size:10.5px; padding:4px 9px;" onclick="quickSearchSmartKeyword('Kalorienarm', 'planner')">🔥 Kalorienarm</button>
+                <button type="button" class="chip" style="font-size:10.5px; padding:4px 9px;" onclick="quickSearchSmartKeyword('Low Carb', 'planner')">🥑 Low Carb</button>
+                <button type="button" class="chip" style="font-size:10.5px; padding:4px 9px;" onclick="quickSearchSmartKeyword('Schnell 20 Min', 'planner')">⚡ Schnell</button>
+                <button type="button" class="chip" style="font-size:10.5px; padding:4px 9px;" onclick="quickSearchSmartKeyword('Vegetarisch', 'planner')">🥦 Veggie</button>
+              </div>
+              <div id="plannerOnlineResultsBox" style="margin-top:6px;"></div>
+            </div>
           </div>
-          <button class="btn btn-primary" style="margin-bottom:10px;" onclick="addWholeWeekToShoppingList()">
+
+          <button class="btn btn-primary" style="margin-bottom:10px; padding:10px 12px; font-size:13px;" onclick="addWholeWeekToShoppingList()">
             🛒 Alle Wochen-Zutaten auf Einkaufsliste setzen
           </button>
           <div id="weekNutritionSummary"></div>
@@ -537,34 +560,26 @@
             </button>
           </div>
 
-          <!-- Horizontal scrollbare Zutaten-Schnellsuche -->
-          <div style="display:flex; align-items:center; gap:5px; margin-bottom:7px;">
-            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerIngredientChips', -160)" title="Zutaten nach links">‹</button>
-            <div id="offerIngredientChips" class="chip-row" style="flex:1; margin-bottom:0;">
-              <button class="chip" onclick="quickFetchIngredientOffers('Hackfleisch')">🥩 Hackfleisch</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Hähnchen')">🍗 Hähnchen</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Lachs')">🐟 Lachs</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Butter')">🧈 Butter</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Nudeln')">🍝 Nudeln</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Tomaten')">🍅 Tomaten</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Käse')">🧀 Käse</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Frischkäse')">🥣 Frischkäse</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Milch')">🥛 Milch</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Sahne')">🥛 Sahne</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Kartoffeln')">🥔 Kartoffeln</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Olivenöl')">🫒 Olivenöl</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Eier')">🥚 Eier</button>
-              <button class="chip" onclick="quickFetchIngredientOffers('Zwiebeln')">🧅 Zwiebeln</button>
-            </div>
-            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerIngredientChips', 160)" title="Zutaten nach rechts">›</button>
+          <!-- Horizontal wischbare Zutaten-Schnellsuche (volle Breite) -->
+          <div id="offerIngredientChips" class="chip-row" style="margin-bottom:7px;">
+            <button class="chip" onclick="quickFetchIngredientOffers('Hackfleisch')">🥩 Hackfleisch</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Hähnchen')">🍗 Hähnchen</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Lachs')">🐟 Lachs</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Butter')">🧈 Butter</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Nudeln')">🍝 Nudeln</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Tomaten')">🍅 Tomaten</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Käse')">🧀 Käse</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Frischkäse')">🥣 Frischkäse</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Milch')">🥛 Milch</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Sahne')">🥛 Sahne</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Kartoffeln')">🥔 Kartoffeln</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Olivenöl')">🫒 Olivenöl</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Eier')">🥚 Eier</button>
+            <button class="chip" onclick="quickFetchIngredientOffers('Zwiebeln')">🧅 Zwiebeln</button>
           </div>
 
-          <!-- Horizontal scrollbarer Händler-Filter (Alle 12 Händler) -->
-          <div style="display:flex; align-items:center; gap:5px;">
-            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerRetailerChips', -160)" title="Händler nach links">‹</button>
-            <div id="offerRetailerChips" class="chip-row" style="flex:1; margin-bottom:0;"></div>
-            <button class="carousel-nav-btn" onclick="scrollElementHorizontally('offerRetailerChips', 160)" title="Händler nach rechts">›</button>
-          </div>
+          <!-- Horizontal wischbarer Händler-Filter (volle Breite) -->
+          <div id="offerRetailerChips" class="chip-row" style="margin-bottom:0;"></div>
         </div>
 
         <!-- KI-Sparrezept aus aktuellen Bobinger Angeboten -->
@@ -927,6 +942,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=45"></script>
+  <script src="./app.js?v=46"></script>
 </body>
 </html>
