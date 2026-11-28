@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="KochTresor" />
   <title>KochTresor – Gemeinsame Rezepte & Koch-App</title>
   <link rel="manifest" href="./manifest.json" />
-  <link rel="stylesheet" href="./styles.css?v=44" />
+  <link rel="stylesheet" href="./styles.css?v=45" />
 </head>
 <body>
   <div id="toast" class="toast">Gespeichert!</div>
@@ -386,11 +386,18 @@
           <div class="section-desc">
             Plant eure Woche gemeinsam im Haushalt. Alle Änderungen sind sofort für alle sichtbar.
           </div>
+          <div style="margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+              <span style="font-size:11px; font-weight:700; color:var(--text-muted);">📆 Tage für KI-Planung wählen:</span>
+              <button type="button" class="pill-btn" style="font-size:10px; padding:2px 7px;" onclick="toggleAllAiWeekPlanDays()">Alle / Werktags</button>
+            </div>
+            <div id="aiWeekPlanDayChips" style="display:grid; grid-template-columns:repeat(7, 1fr); gap:4px;"></div>
+          </div>
           <div class="btn-row" style="margin-bottom:8px;">
             <button id="aiWeekPlanBtn" class="btn btn-accent" style="font-size:12px; padding:10px 8px;" onclick="generateAiWeekPlan()">
-              ✨ KI-Wochenplan (Mo–So)
+              ✨ KI-Wochenplan erstellen
             </button>
-            <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="autoFillWeekPlan()" title="Zufällig aus Sammlung füllen">
+            <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="autoFillWeekPlan()" title="Ausgewählte Tage zufällig aus Sammlung füllen">
               🎲 Zufall
             </button>
             <button class="btn btn-secondary" style="width:auto; font-size:12px; padding:10px 10px;" onclick="clearWeekPlan()" title="Wochenplan leeren">
@@ -398,6 +405,16 @@
             </button>
           </div>
           <div id="aiWeekPlanHint" style="display:none; font-size:11.5px; color:#6ee7b7; margin-bottom:8px; padding:7px 10px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); border-radius:10px;"></div>
+
+          <!-- Direkte Online-Rezeptsuche im Wochenplaner -->
+          <div style="background:rgba(15,23,42,0.75); border:1px solid var(--border); border-radius:12px; padding:9px 10px; margin-bottom:10px;">
+            <div style="font-size:11.5px; font-weight:800; color:#93c5fd; margin-bottom:6px;">🔎 Online-Rezept direkt für den Wochenplan suchen</div>
+            <div class="btn-row" style="gap:6px;">
+              <input id="plannerOnlineSearchInput" type="text" class="text-input" style="padding:8px 10px; font-size:13px;" placeholder="z.B. Lasagne, Lachs, Auflauf..." onkeydown="if(event.key==='Enter') executePlannerOnlineSearch()" />
+              <button id="plannerOnlineSearchBtn" type="button" class="btn btn-primary" style="width:auto; padding:0 12px; font-size:12px; white-space:nowrap;" onclick="executePlannerOnlineSearch()">🔍 Suchen</button>
+            </div>
+            <div id="plannerOnlineResultsBox" style="margin-top:6px;"></div>
+          </div>
           <button class="btn btn-primary" style="margin-bottom:10px;" onclick="addWholeWeekToShoppingList()">
             🛒 Alle Wochen-Zutaten auf Einkaufsliste setzen
           </button>
@@ -910,6 +927,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=44"></script>
+  <script src="./app.js?v=45"></script>
 </body>
 </html>

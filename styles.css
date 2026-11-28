@@ -1983,5 +1983,44 @@ body.netlify-hosted .app-content {
   text-security: disc;
 }
 
+/* Interaktive Prospekt-Markierungen (Per Tipp Artikel im Prospekt markieren & auf Einkaufsliste setzen) */
+.brochure-pin-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.92);
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.65);
+  z-index: 15;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.day-select-chip {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 9px;
+  padding: 6px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+}
+
+.day-select-chip.active {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: rgba(16, 185, 129, 0.65);
+  color: #6ee7b7;
+}
+
 
 

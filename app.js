@@ -4,7 +4,25 @@
 
 const DB_NAME = 'KochTresorDB';
 const DB_VERSION = 1;
-const DATA_SCHEMA_VERSION = '2026-11-21-v44-github-pages-invite-fix';
+const DATA_SCHEMA_VERSION = '2026-11-28-v45-complete-suite';
+
+function getOrCreateHouseholdSyncSecret() {
+  try {
+    let existing = localStorage.getItem('kt_sync_secret') || '';
+    if (existing && existing.length >= 16) return existing;
+    const arr = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      crypto.getRandomValues(arr);
+    } else {
+      for (let i = 0; i < 16; i++) arr[i] = Math.floor(Math.random() * 256);
+    }
+    existing = Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('kt_sync_secret', existing);
+    return existing;
+  } catch (_) {
+    return 'kt_default_sec_86399_bobingen';
+  }
+}
 
 if (typeof window !== 'undefined' && /\.netlify\.app$/i.test(window.location.hostname || '')) {
   if (document.body) {
@@ -98,6 +116,7 @@ let state = {
     syncId: localStorage.getItem('kt_sync_id') || '',
     sbUrl: localStorage.getItem('kt_sb_url') || '',
     sbKey: localStorage.getItem('kt_sb_key') || '',
+    syncSecret: getOrCreateHouseholdSyncSecret(),
     syncStatus: 'idle',
     lastSyncAt: 0,
     lastSyncedRemoteAt: Number(localStorage.getItem('kt_last_remote_ts') || '0'),
@@ -112,6 +131,9 @@ let state = {
   deletedRecipeIds: JSON.parse(localStorage.getItem('kt_deleted_recipes') || '[]'),
   deletedShoppingIds: JSON.parse(localStorage.getItem('kt_deleted_shop') || '[]'),
   weekPlanUpdatedAt: Number(localStorage.getItem('kt_weekplan_ts') || '0'),
+  weekPlanPortions: JSON.parse(localStorage.getItem('kt_weekplan_portions') || '{}'),
+  aiSelectedDays: JSON.parse(localStorage.getItem('kt_ai_selected_days') || '["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]'),
+  brochurePins: JSON.parse(localStorage.getItem('kt_brochure_pins_v45') || '{}'),
   filterCategory: 'Alle',
   searchQuery: '',
   fridgeQuery: '',
@@ -828,24 +850,36 @@ async function ensureDemoOfflineVideo() {
 // ============================================================================
 window.addEventListener('DOMContentLoaded', async () => {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js?v=17').then((reg) => reg.update()).catch(() => {});
+    navigator.serviceWorker.register('./sw.js?v=45').then((reg) => reg.update()).catch(() => {});
   }
   if ('caches' in window) {
     caches.keys().then((keys) => {
-      keys.filter((k) => k !== 'kochtresor-v17').forEach((k) => caches.delete(k));
+      keys.filter((k) => k !== 'kochtresor-v45').forEach((k) => caches.delete(k));
     }).catch(() => {});
   }
 
-  const params = new URLSearchParams(window.location.search);
+  // Sicherheit: Lese Einladungs-Parameter sowohl aus #hash (keine Übertragung an Server/Logs!) als auch kompatibel aus ?search
+  const queryParams = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+  const getInviteParam = (key) => hashParams.get(key) || queryParams.get(key) || '';
+
   let joinedHouseholdFromLink = false;
-  if (params.get('household')) {
-    const joinedCode = params.get('household').trim().toUpperCase();
+  if (getInviteParam('household')) {
+    const joinedCode = getInviteParam('household').trim().toUpperCase();
     state.household.code = joinedCode;
     localStorage.setItem('kt_household_code', joinedCode);
     joinedHouseholdFromLink = true;
   }
-  if (params.get('member')) {
-    const joinedMember = params.get('member').trim();
+  if (getInviteParam('syncSecret')) {
+    const joinedSecret = getInviteParam('syncSecret').trim();
+    if (joinedSecret.length >= 12) {
+      state.household.syncSecret = joinedSecret;
+      localStorage.setItem('kt_household_sync_secret', joinedSecret);
+      joinedHouseholdFromLink = true;
+    }
+  }
+  if (getInviteParam('member')) {
+    const joinedMember = getInviteParam('member').trim();
     if (joinedMember) {
       state.household.memberName = joinedMember;
       localStorage.setItem('kt_member_name', joinedMember);
@@ -856,17 +890,17 @@ window.addEventListener('DOMContentLoaded', async () => {
       joinedHouseholdFromLink = true;
     }
   }
-  if (params.get('sync')) {
-    const joinedSyncId = params.get('sync').trim();
+  if (getInviteParam('sync')) {
+    const joinedSyncId = getInviteParam('sync').trim();
     if (joinedSyncId) {
       state.household.syncId = joinedSyncId;
       localStorage.setItem('kt_sync_id', joinedSyncId);
       joinedHouseholdFromLink = true;
     }
   }
-  if (params.get('sbUrl') && params.get('sbKey')) {
-    const joinedSbUrl = params.get('sbUrl').trim().replace(/\/+$/, '');
-    const joinedSbKey = params.get('sbKey').trim();
+  if (getInviteParam('sbUrl') && getInviteParam('sbKey')) {
+    const joinedSbUrl = getInviteParam('sbUrl').trim().replace(/\/+$/, '');
+    const joinedSbKey = getInviteParam('sbKey').trim();
     if (joinedSbUrl && joinedSbKey) {
       state.household.sbUrl = joinedSbUrl;
       state.household.sbKey = joinedSbKey;
@@ -875,16 +909,16 @@ window.addEventListener('DOMContentLoaded', async () => {
       joinedHouseholdFromLink = true;
     }
   }
-  if (params.get('aiKey')) {
-    const joinedAiKey = params.get('aiKey').trim();
+  if (getInviteParam('aiKey')) {
+    const joinedAiKey = getInviteParam('aiKey').trim();
     if (joinedAiKey.length > 10) {
       state.household.geminiKey = joinedAiKey;
       localStorage.setItem('kt_gemini_key', joinedAiKey);
       joinedHouseholdFromLink = true;
     }
   }
-  if (params.get('aiKey2')) {
-    const joinedAiKey2 = params.get('aiKey2').trim();
+  if (getInviteParam('aiKey2')) {
+    const joinedAiKey2 = getInviteParam('aiKey2').trim();
     if (joinedAiKey2.length > 10) {
       state.household.backupAiKey = joinedAiKey2;
       localStorage.setItem('kt_backup_ai_key', joinedAiKey2);
@@ -896,7 +930,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       const cleanUrl = `${window.location.origin}${window.location.pathname}`;
       window.history.replaceState({}, document.title, cleanUrl);
     } catch (_) {}
-    showToast(`Haushalt "${state.household.code}" verbunden – synchronisiere Daten...`);
+    showToast(`🔒 Haushalt "${state.household.code}" sicher verbunden – synchronisiere Daten...`);
   }
 
   // Sofortiges Initial-Rendering (0 ms Verzögerung beim Öffnen der App!)
@@ -1015,6 +1049,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   const savedPlan = await dbGet('meta', 'weekPlan');
   if (savedPlan && savedPlan.value) state.weekPlan = savedPlan.value;
+
+  const savedPlanPortions = await dbGet('meta', 'weekPlanPortions');
+  if (savedPlanPortions && savedPlanPortions.value && typeof savedPlanPortions.value === 'object') {
+    state.weekPlanPortions = savedPlanPortions.value;
+  }
 
   initSupermarketOffersState();
   ensureDemoOfflineVideo();
@@ -2629,14 +2668,77 @@ function navCookStep(delta) {
   renderCookModeStep();
 }
 
+function selectBestNaturalGermanVoice() {
+  if (!('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices() || [];
+  const deVoices = voices.filter((v) => /^de([-_]|$)/i.test(v.lang || '') || /german|deutsch/i.test(v.name || ''));
+  if (deVoices.length === 0) return null;
+
+  // Priorisiere moderne Neural-/Online-Stimmen (klingen deutlich wärmer & natürlicher als alte System-Stimmen)
+  const scoreVoice = (v) => {
+    const n = `${v.name || ''} ${v.voiceURI || ''}`.toLowerCase();
+    let score = 0;
+    if (n.includes('natural')) score += 100;
+    if (n.includes('neural')) score += 90;
+    if (n.includes('katja') || n.includes('conrad') || n.includes('amala') || n.includes('seraphina')) score += 85;
+    if (n.includes('google deutsch')) score += 80;
+    if (n.includes('premium') || n.includes('enhanced') || n.includes('siri')) score += 75;
+    if (n.includes('anna') || n.includes('petra') || n.includes('helena') || n.includes('martin')) score += 50;
+    if (v.localService === false) score += 30;
+    if (/de[-_]de/i.test(v.lang || '')) score += 15;
+    return score;
+  };
+
+  return [...deVoices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0] || deVoices[0];
+}
+
+function prepareNaturalGermanSpeechText(rawText) {
+  return String(rawText || '')
+    .replace(/\b(\d+)\s*-\s*(\d+)\b/g, '$1 bis $2')
+    .replace(/\bca\.\s*/gi, 'cirka ')
+    .replace(/\bz\.?\s*B\.\s*/gi, 'zum Beispiel ')
+    .replace(/\bbzw\.\s*/gi, 'beziehungsweise ')
+    .replace(/\bggf\.\s*/gi, 'gegebenenfalls ')
+    .replace(/\bEL\b/g, 'Esslöffel')
+    .replace(/\bTL\b/g, 'Teelöffel')
+    .replace(/\bMin\.?\b/g, 'Minuten')
+    .replace(/\bSek\.?\b/g, 'Sekunden')
+    .replace(/\bStd\.?\b/g, 'Stunden')
+    .replace(/°\s*C\b/gi, ' Grad Celsius')
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*g\b/g, '$1 Gramm')
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*kg\b/g, '$1 Kilogramm')
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*ml\b/g, '$1 Milliliter')
+    .replace(/\b(\d+(?:[.,]\d+)?)\s*l\b/g, '$1 Liter');
+}
+
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  try {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+  } catch (_) {}
+}
+
 function speakStepText(text) {
   if (!('speechSynthesis' in window)) {
     showToast('Sprachausgabe auf diesem Gerät nicht verfügbar');
     return;
   }
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel();
+    showToast('⏹ Vorlesen gestoppt');
+    return;
+  }
   window.speechSynthesis.cancel();
-  const utter = new SpeechSynthesisUtterance(text);
+  const naturalText = prepareNaturalGermanSpeechText(text);
+  const utter = new SpeechSynthesisUtterance(naturalText);
   utter.lang = 'de-DE';
+  const bestVoice = selectBestNaturalGermanVoice();
+  if (bestVoice) {
+    utter.voice = bestVoice;
+    utter.lang = bestVoice.lang || 'de-DE';
+  }
+  utter.rate = 0.96;
+  utter.pitch = 1.02;
   window.speechSynthesis.speak(utter);
 }
 
@@ -2734,9 +2836,50 @@ function togglePantryStaplesFilter() {
 
 function parseSpecNumberAndUnit(specStr) {
   const s = (specStr || '').trim();
-  const m = s.match(/^(\d+(?:[.,]\d+)?)\s*(.*)$/);
+  const fracMap = { '½': '0.5', '¼': '0.25', '¾': '0.75', '⅓': '0.33', '⅔': '0.67' };
+  let normStr = s;
+  Object.keys(fracMap).forEach((k) => {
+    normStr = normStr.replace(new RegExp(k, 'g'), fracMap[k]);
+  });
+  const fracSlash = normStr.match(/^(\d+)\s*\/\s*(\d+)\s*(.*)$/);
+  if (fracSlash) {
+    const denom = parseFloat(fracSlash[2]) || 1;
+    return { num: Math.round((parseFloat(fracSlash[1]) / denom) * 100) / 100, unit: (fracSlash[3] || '').trim() };
+  }
+  const m = normStr.match(/^(\d+(?:[.,]\d+)?)\s*(.*)$/);
   if (!m) return { num: null, unit: s };
   return { num: parseFloat(m[1].replace(',', '.')), unit: (m[2] || '').trim() };
+}
+
+// Rechnet Esslöffel (EL = 15 ml), Teelöffel (TL = 5 ml), Liter (l = 1000 ml) & Kilogramm (kg = 1000 g) sauber in ml / g um!
+function convertSpecToCanonicalMetric(parsedSpec) {
+  if (!parsedSpec || parsedSpec.num === null || isNaN(parsedSpec.num)) {
+    return parsedSpec || { num: null, unit: '' };
+  }
+  const u = String(parsedSpec.unit || '').trim();
+  const low = u.toLowerCase().replace(/\.$/, '');
+  if (low === 'el' || low === 'esslöffel' || low === 'essloeffel' || low === 'essl') {
+    return { num: Math.round(parsedSpec.num * 15 * 100) / 100, unit: 'ml' };
+  }
+  if (low === 'tl' || low === 'teelöffel' || low === 'teeloeffel' || low === 'teel') {
+    return { num: Math.round(parsedSpec.num * 5 * 100) / 100, unit: 'ml' };
+  }
+  if (low === 'ml' || low === 'milliliter') {
+    return { num: parsedSpec.num, unit: 'ml' };
+  }
+  if (low === 'l' || low === 'liter') {
+    return { num: Math.round(parsedSpec.num * 1000 * 100) / 100, unit: 'ml' };
+  }
+  if (low === 'cl') {
+    return { num: Math.round(parsedSpec.num * 10 * 100) / 100, unit: 'ml' };
+  }
+  if (low === 'g' || low === 'gr' || low === 'gramm') {
+    return { num: parsedSpec.num, unit: 'g' };
+  }
+  if (low === 'kg' || low === 'kilo' || low === 'kilogramm') {
+    return { num: Math.round(parsedSpec.num * 1000 * 100) / 100, unit: 'g' };
+  }
+  return { num: parsedSpec.num, unit: u };
 }
 
 function normalizeIngredientBaseKey(name) {
@@ -2764,11 +2907,11 @@ function getProcessedShoppingList(options = {}) {
     }));
   }
 
-  // Bündele identische Zutaten (getrennt nach offen/erledigt)
+  // Bündele identische Zutaten & rechne EL / TL / Liter automatisch in ml (bzw. kg in g) um!
   const groups = new Map();
   raw.forEach((item) => {
     const normName = normalizeIngredientKey(item.name);
-    const parsedSpec = parseSpecNumberAndUnit(item.spec);
+    const parsedSpec = convertSpecToCanonicalMetric(parseSpecNumberAndUnit(item.spec));
     const key = `${item.checked ? '1' : '0'}|${normName}|${parsedSpec.unit.toLowerCase()}`;
     if (!groups.has(key)) {
       groups.set(key, {
@@ -2814,10 +2957,23 @@ function getProcessedShoppingList(options = {}) {
   });
 }
 
+function formatSingleSpecWithElToMl(rawSpec) {
+  const s = String(rawSpec || '').trim();
+  if (!s || s === 'nach Bedarf') return 'nach Bedarf';
+  const rawParsed = parseSpecNumberAndUnit(s);
+  const low = String(rawParsed.unit || '').trim().toLowerCase().replace(/\.$/, '');
+  if (rawParsed.num !== null && (low === 'el' || low === 'esslöffel' || low === 'essloeffel' || low === 'tl' || low === 'teelöffel')) {
+    const conv = convertSpecToCanonicalMetric(rawParsed);
+    const numStr = Number.isInteger(conv.num) ? String(conv.num) : String(conv.num).replace('.', ',');
+    return `${numStr} ${conv.unit}`;
+  }
+  return s;
+}
+
 function upsertShoppingListIngredient({ name, spec, recipeTitle }) {
   const cleanName = String(name || '').trim();
   if (!cleanName) return 'skipped';
-  const cleanSpec = String(spec || '').trim() || 'nach Bedarf';
+  const cleanSpec = formatSingleSpecWithElToMl(spec);
   const cleanRec = String(recipeTitle || '').trim();
   const baseKey = normalizeIngredientBaseKey(cleanName);
   const now = Date.now();
@@ -2834,11 +2990,11 @@ function upsertShoppingListIngredient({ name, spec, recipeTitle }) {
     if (cleanRec && existingRecList.includes(cleanRec)) {
       return 'duplicate';
     }
-    const parsedOld = parseSpecNumberAndUnit(existing.spec || '');
-    const parsedNew = parseSpecNumberAndUnit(cleanSpec);
-    if (parsedOld && parsedNew && parsedOld.unit.toLowerCase() === parsedNew.unit.toLowerCase()) {
+    const parsedOld = convertSpecToCanonicalMetric(parseSpecNumberAndUnit(existing.spec || ''));
+    const parsedNew = convertSpecToCanonicalMetric(parseSpecNumberAndUnit(cleanSpec));
+    if (parsedOld.num !== null && parsedNew.num !== null && parsedOld.unit.toLowerCase() === parsedNew.unit.toLowerCase()) {
       const sum = Math.round((parsedOld.num + parsedNew.num) * 100) / 100;
-      const sumStr = String(sum).replace('.', ',');
+      const sumStr = Number.isInteger(sum) ? String(sum) : String(sum).replace('.', ',');
       existing.spec = parsedOld.unit ? `${sumStr} ${parsedOld.unit}` : sumStr;
     } else if (cleanSpec !== 'nach Bedarf' && existing.spec !== cleanSpec) {
       existing.spec = existing.spec === 'nach Bedarf' ? cleanSpec : `${existing.spec} + ${cleanSpec}`;
@@ -3219,7 +3375,7 @@ async function addManualShopItem() {
     showToast('Bitte zuerst einen Artikelnamen eingeben');
     return;
   }
-  const spec = specInput.value.trim() || 'nach Bedarf';
+  const spec = formatSingleSpecWithElToMl(specInput.value.trim() || 'nach Bedarf');
   state.shoppingList.unshift({
     id: 'sh-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
     name,
@@ -3260,7 +3416,7 @@ function exportShoppingListToBring() {
     showToast('Keine offenen Zutaten auf der Einkaufsliste');
     return;
   }
-  openBringTransferModal('KochTresor Einkaufsliste', allOpenItems, '', 4, 4);
+  openBringTransferModal('KochTresor Einkaufsliste', allOpenItems, '', 4, 4, true);
 }
 
 function encodeBringRecipePayloadBase64(title, servings, items) {
@@ -3303,7 +3459,21 @@ function buildSupabaseBringRecipeUrl(title, servings, items) {
   return `${baseUrl}/functions/v1/bring-recipe?${params.toString()}`;
 }
 
-function openBringTransferModal(title, items, sourceUrl, baseQuantity, requestedQuantity) {
+async function removeTransferredShoppingItemsAfterBring() {
+  if (!state.pendingBringClearSourceIds || state.pendingBringClearSourceIds.length === 0) return;
+  const idsToRemove = [...state.pendingBringClearSourceIds];
+  const removeSet = new Set(idsToRemove);
+  recordDeletedShoppingIds(idsToRemove);
+  state.shoppingList = (state.shoppingList || []).filter((i) => !removeSet.has(i.id));
+  state.pendingBringClearSourceIds = [];
+  await saveShoppingList();
+  renderShoppingList();
+  renderOffersTab();
+  closeBringModal();
+  showToast('🛒 Alle Zutaten an Bring! übergeben & aus der Einkaufsliste entfernt!');
+}
+
+function openBringTransferModal(title, items, sourceUrl, baseQuantity, requestedQuantity, clearCartOnTransfer = false) {
   const modal = document.getElementById('bringModal');
   const body = document.getElementById('bringModalBody');
   const allLinesArr = (items || []).map((i) => {
@@ -3313,6 +3483,9 @@ function openBringTransferModal(title, items, sourceUrl, baseQuantity, requested
   const plainLines = allLinesArr.join('\n');
   state.lastBringTransferItems = items || [];
   state.bringClipboardText = plainLines;
+  state.pendingBringClearSourceIds = clearCartOnTransfer
+    ? (state.shoppingList || []).filter((i) => !i.checked).map((i) => i.id)
+    : [];
 
   // 1) Supabase Edge Function liefert echtes Schema.org Recipe JSON-LD -> Bring! App importiert ALLE Zutaten direkt!
   const sbBringSchemaUrl = buildSupabaseBringRecipeUrl(title, requestedQuantity, items);
@@ -3329,6 +3502,7 @@ function openBringTransferModal(title, items, sourceUrl, baseQuantity, requested
     : '';
 
   const primaryDeeplink = bringSupabaseDeeplink || bringDirectSourceUrl;
+  const clearAttr = clearCartOnTransfer ? `onclick="setTimeout(() => removeTransferredShoppingItemsAfterBring(), 450)"` : '';
 
   body.innerHTML = `
     <div class="section-card" style="background:rgba(0,133,111,0.15); border-color:rgba(0,133,111,0.4);">
@@ -3336,27 +3510,27 @@ function openBringTransferModal(title, items, sourceUrl, baseQuantity, requested
       <div class="section-desc">
         ${
           primaryDeeplink
-            ? `Öffnet die <strong>Bring! Smartphone-App</strong> direkt mit allen <strong>${items.length} Zutaten</strong> von <strong>"${escapeHtml(title)}"</strong> (${requestedQuantity} Port.) zum 1-Klick-Übernehmen:`
+            ? `Öffnet die <strong>Bring! Smartphone-App</strong> mit allen <strong>${items.length} Zutaten</strong>${clearCartOnTransfer ? ' und leert danach automatisch deine Einkaufsliste' : ''}:`
             : `Verbinde einmalig <strong>Supabase</strong> im Tab „Haushalt“ (mit der Edge Function <code>bring-recipe</code>), um jede Einkaufsliste &amp; jedes Rezept direkt in die Bring! App zu senden.`
         }
       </div>
       <div style="display:flex; flex-direction:column; gap:10px;">
         ${
           primaryDeeplink
-            ? `<a href="${primaryDeeplink}" target="_blank" rel="noopener" class="btn btn-bring" style="text-decoration:none;">
-                 📲 1. Alle ${items.length} Zutaten direkt in Bring! App öffnen ↗
+            ? `<a href="${primaryDeeplink}" target="_blank" rel="noopener noreferrer" class="btn btn-bring" style="text-decoration:none;" ${clearAttr}>
+                 📲 1. Alle ${items.length} Zutaten an Bring! senden${clearCartOnTransfer ? ' &amp; Liste leeren' : ''} ↗
                </a>`
             : ''
         }
         ${
           bringDirectSourceUrl && bringSupabaseDeeplink
-            ? `<a href="${bringDirectSourceUrl}" target="_blank" rel="noopener" class="btn btn-secondary" style="text-decoration:none;">
+            ? `<a href="${bringDirectSourceUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="text-decoration:none;" ${clearAttr}>
                  🔗 2. Original-Webseite an Bring! senden ↗
                </a>`
             : ''
         }
-        <button class="btn btn-primary" onclick="copyBringList(${JSON.stringify(plainLines).replace(/"/g, '&quot;')})">
-          📋 Alle ${items.length} Zutaten in Zwischenablage kopieren
+        <button class="btn btn-primary" onclick="copyBringList(${JSON.stringify(plainLines).replace(/"/g, '&quot;')}); ${clearCartOnTransfer ? 'removeTransferredShoppingItemsAfterBring();' : ''}">
+          📋 Alle ${items.length} Zutaten kopieren${clearCartOnTransfer ? ' &amp; Einkaufsliste leeren' : ''}
         </button>
       </div>
     </div>
@@ -3784,29 +3958,177 @@ async function fetchUrlContentWithCorsFallback(targetUrl) {
   return null;
 }
 
+function isLikelyDishImageUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const u = url.trim();
+  if (!/^https?:\/\//i.test(u)) return false;
+  if (/\.(svg|ico|gif)(\?|$)/i.test(u)) return false;
+  if (/(logo|favicon|avatar|gravatar|icon|sprite|badge|button|pixel|1x1|tracker|analytics|doubleclick|facebook\.com\/tr|pinterest\.com\/pin\/create|share-button|placeholder|blank\.|spacer)/i.test(u)) {
+    return false;
+  }
+  return true;
+}
+
+function resolveCandidateImageUrl(raw, sourceUrl = '') {
+  if (!raw || typeof raw !== 'string') return '';
+  let cleaned = decodeHtmlEntities(raw).trim();
+  if (!cleaned || cleaned.startsWith('data:')) return '';
+  // Falls ein srcset übergeben wurde, wähle die größte Auflösung
+  if (cleaned.includes(',') && /\s\d+[wx]\b/i.test(cleaned)) {
+    let bestUrl = '';
+    let bestScore = -1;
+    cleaned.split(',').forEach((part) => {
+      const m = part.trim().match(/^(\S+)(?:\s+(\d+(?:\.\d+)?)([wx]))?/i);
+      if (m && m[1]) {
+        const val = m[2] ? parseFloat(m[2]) : 1;
+        const score = m[3]?.toLowerCase() === 'w' ? val : val * 500;
+        if (score >= bestScore) {
+          bestScore = score;
+          bestUrl = m[1];
+        }
+      }
+    });
+    if (bestUrl) cleaned = bestUrl;
+  } else {
+    cleaned = cleaned.split(/\s+/)[0];
+  }
+  if (cleaned.startsWith('//')) cleaned = 'https:' + cleaned;
+  else if (!/^https?:\/\//i.test(cleaned) && sourceUrl) {
+    try {
+      cleaned = new URL(cleaned, sourceUrl).href;
+    } catch (_) {
+      return '';
+    }
+  }
+  return isLikelyDishImageUrl(cleaned) ? cleaned : '';
+}
+
 function extractBestImageFromHtml(html, sourceUrl = '') {
   if (!html || typeof html !== 'string') return '';
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
-    const candidates = [
+
+    // 1. JSON-LD Bild-Felder prüfen (oft die hochauflösendsten Original-Gerichtsfotos)
+    const jsonLdImages = [];
+    doc.querySelectorAll('script[type="application/ld+json"]').forEach((sc) => {
+      try {
+        const collectImg = (node) => {
+          if (!node || typeof node !== 'object') return;
+          if (Array.isArray(node)) {
+            node.forEach(collectImg);
+            return;
+          }
+          if (node.image) {
+            const imgs = Array.isArray(node.image) ? node.image : [node.image];
+            imgs.forEach((im) => {
+              const u = typeof im === 'string' ? im : im?.url || im?.contentUrl || '';
+              if (u) jsonLdImages.push(u);
+            });
+          }
+          if (node.thumbnailUrl) {
+            const thumbs = Array.isArray(node.thumbnailUrl) ? node.thumbnailUrl : [node.thumbnailUrl];
+            thumbs.forEach((t) => {
+              if (typeof t === 'string') jsonLdImages.push(t);
+            });
+          }
+          if (node['@graph']) collectImg(node['@graph']);
+          if (node.mainEntity) collectImg(node.mainEntity);
+        };
+        collectImg(JSON.parse(sc.textContent || ''));
+      } catch (_) {}
+    });
+
+    // 2. Meta-Tags & Rezeptkarten-Bilder (inkl. Lazy-Loading Attribute & srcset)
+    const metaAndCardRaw = [
+      ...jsonLdImages,
       doc.querySelector('meta[property="og:image:secure_url"]')?.getAttribute('content'),
       doc.querySelector('meta[property="og:image"]')?.getAttribute('content'),
+      doc.querySelector('meta[name="twitter:image:src"]')?.getAttribute('content'),
       doc.querySelector('meta[name="twitter:image"]')?.getAttribute('content'),
-      doc.querySelector('link[rel="image_src"]')?.getAttribute('href'),
-      doc.querySelector('article img, .recipe img, main img')?.getAttribute('src')
+      doc.querySelector('meta[itemprop="image"]')?.getAttribute('content'),
+      doc.querySelector('link[rel="image_src"]')?.getAttribute('href')
     ].filter(Boolean);
 
-    for (const raw of candidates) {
-      const cleaned = decodeHtmlEntities(raw).trim();
-      if (!cleaned || cleaned.startsWith('data:')) continue;
-      if (/^https?:\/\//i.test(cleaned)) return cleaned;
-      if (cleaned.startsWith('//')) return 'https:' + cleaned;
-      if (sourceUrl) {
-        try {
-          return new URL(cleaned, sourceUrl).href;
-        } catch (_) {}
+    for (const raw of metaAndCardRaw) {
+      const resolved = resolveCandidateImageUrl(raw, sourceUrl);
+      if (resolved) return resolved;
+    }
+
+    // 3. Sichtbare Gericht-Bilder im Rezept-/Artikel-Bereich (inkl. data-src, data-lazy-src, data-pin-media, srcset)
+    const imgSelectors = [
+      '.wprm-recipe-image img',
+      '.tasty-recipes-image img',
+      '.mv-create-image img',
+      '[itemprop="image"]',
+      'article figure img',
+      'article picture source',
+      'article img',
+      '.recipe img',
+      '.entry-content img',
+      '.post-content img',
+      'main img',
+      'img'
+    ];
+
+    for (const sel of imgSelectors) {
+      const els = Array.from(doc.querySelectorAll(sel));
+      for (const el of els) {
+        const wAttr = parseInt(el.getAttribute('width') || '0', 10);
+        const hAttr = parseInt(el.getAttribute('height') || '0', 10);
+        if ((wAttr > 0 && wAttr < 110) || (hAttr > 0 && hAttr < 110)) continue;
+
+        const attrs = [
+          el.getAttribute('data-pin-media'),
+          el.getAttribute('data-lazy-srcset'),
+          el.getAttribute('data-srcset'),
+          el.getAttribute('srcset'),
+          el.getAttribute('data-lazy-src'),
+          el.getAttribute('data-src'),
+          el.getAttribute('data-original'),
+          el.getAttribute('data-full-url'),
+          el.getAttribute('content'),
+          el.getAttribute('src')
+        ].filter(Boolean);
+
+        for (const rawAttr of attrs) {
+          const resolved = resolveCandidateImageUrl(rawAttr, sourceUrl);
+          if (resolved) return resolved;
+        }
       }
+    }
+  } catch (_) {}
+  return '';
+}
+
+function extractBestImageFromMarkdownOrJina(jinaData = {}, markdownText = '', sourceUrl = '') {
+  try {
+    // 1. Jina JSON data.images Objekt oder Array prüfen
+    if (jinaData && typeof jinaData === 'object') {
+      const directCandidates = [jinaData.image, jinaData.ogImage, jinaData.coverImage].filter(Boolean);
+      for (const c of directCandidates) {
+        const r = resolveCandidateImageUrl(String(c), sourceUrl);
+        if (r) return r;
+      }
+      if (jinaData.images && typeof jinaData.images === 'object') {
+        const vals = Array.isArray(jinaData.images) ? jinaData.images : Object.values(jinaData.images);
+        for (const v of vals) {
+          const u = typeof v === 'string' ? v : v?.src || v?.url || '';
+          const r = resolveCandidateImageUrl(u, sourceUrl);
+          if (r) return r;
+        }
+      }
+    }
+    // 2. Markdown-Bilder ![Alt](https://...) auswerten
+    const md = String(markdownText || '');
+    const mdImgRegex = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+"[^"]*")?\)/gi;
+    let m;
+    while ((m = mdImgRegex.exec(md)) !== null) {
+      const alt = (m[1] || '').toLowerCase();
+      const candidate = m[2];
+      if (/(logo|icon|avatar|flag|stern|star|rating|author|profil)/i.test(alt)) continue;
+      const resolved = resolveCandidateImageUrl(candidate, sourceUrl);
+      if (resolved) return resolved;
     }
   } catch (_) {}
   return '';
@@ -3850,6 +4172,8 @@ function extractReadableTextFromHtml(html) {
     const blocks = [];
     if (title) blocks.push(`Titel: ${title}`);
     if (metaDesc) blocks.push(`Kurzbeschreibung: ${decodeHtmlEntities(metaDesc)}`);
+    const detectedImg = extractBestImageFromHtml(html, '');
+    if (detectedImg) blocks.push(`Titelbild-URL: ${detectedImg}`);
 
     root.querySelectorAll('h1, h2, h3, h4, p, li, tr').forEach((el) => {
       const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -3948,6 +4272,12 @@ function sanitizeAndVerifyExtractedRecipe(raw, fallbackUrl = '') {
       ? raw.category
       : detectRecipeCategory(title, cleanIngredients, raw.tags || []);
 
+  const validImageUrl = isLikelyDishImageUrl(raw.imageUrl)
+    ? raw.imageUrl.trim()
+    : typeof raw.imageUrl === 'string' && raw.imageUrl.startsWith('data:image/')
+      ? raw.imageUrl
+      : '';
+
   return {
     ...raw,
     title,
@@ -3957,6 +4287,7 @@ function sanitizeAndVerifyExtractedRecipe(raw, fallbackUrl = '') {
     portions: !isNaN(portionsNum) && portionsNum >= 1 && portionsNum <= 40 ? portionsNum : 4,
     author: cleanImportedRecipeText(raw.author || hostName) || hostName,
     sourceUrl: raw.sourceUrl || fallbackUrl || '',
+    imageUrl: validImageUrl,
     ingredients: cleanIngredients,
     steps: cleanSteps
   };
@@ -3993,6 +4324,7 @@ Trenne STRENG zwischen:
 2. "ingredients": ALLE Zutaten mit exakter Menge (als Zahl, Brüche wie 1/2 als 0.5, ohne Menge null), Einheit ("g", "ml", "EL", "TL", "Stück", "Prise", "") und Zutatenname. Optional "group" (z.B. "Für die Soße", sonst ""). Keine Zubereitungsschritte bei den Zutaten!
 3. "steps": ALLE Zubereitungsschritte von der Seite in logischer Reihenfolge. Keine Zutatenlisten bei der Zubereitung!
 4. "nutrition": falls Nährwerte pro Portion auf der Seite stehen {"kcal": 450, "carbs": "40 g", "protein": "25 g", "fat": "15 g"}, sonst null.
+5. "imageUrl": falls im Seiteninhalt eine Bild-URL (https://...) des Gerichts steht (kein Logo/Icon), gib diese exakte URL an, sonst "".
 
 Gib AUSSCHLIESSLICH valides JSON in genau diesem Schema zurück:
 {
@@ -4001,6 +4333,7 @@ Gib AUSSCHLIESSLICH valides JSON in genau diesem Schema zurück:
   "category": "eine aus: ${categoryList}",
   "prepTime": 25,
   "portions": 4,
+  "imageUrl": "",
   "ingredients": [{"amount": 250, "unit": "g", "name": "Couscous", "group": ""}],
   "steps": ["Schritt 1 ...", "Schritt 2 ..."],
   "nutrition": null
@@ -5161,16 +5494,21 @@ async function fetchAndParseSocialRecipe(url, manualCaption = '') {
     }
 
     // D) Fallback: Direkt über Jina Reader abrufen (ohne Tracking-Query-Parameter wie ?igsh=...)
-    if (!rawSocialText || rawSocialText.length < 40) {
+    if (!rawSocialText || rawSocialText.length < 40 || !fetchedCoverImage) {
       try {
         const cleanSocialUrl = url.split('?')[0];
         const jinaRes = await fetch(`https://r.jina.ai/${cleanSocialUrl}`, {
-          headers: { Accept: 'text/plain' }
+          headers: { Accept: 'application/json' }
         });
         if (jinaRes.ok) {
-          const jinaTxt = await jinaRes.text();
+          const jJson = await jinaRes.json();
+          const jData = jJson?.data || {};
+          const jinaTxt = (jData.title ? `Title: ${jData.title}\n` : '') + (jData.content || '');
           if (jinaTxt && jinaTxt.length > rawSocialText.length) {
             rawSocialText = jinaTxt;
+          }
+          if (!fetchedCoverImage) {
+            fetchedCoverImage = extractBestImageFromMarkdownOrJina(jData, jinaTxt, url);
           }
         }
       } catch (_) {}
@@ -5190,6 +5528,7 @@ async function fetchAndParseSocialRecipe(url, manualCaption = '') {
         sourceUrl: url,
         imageUrl:
           fetchedCoverImage ||
+          (isLikelyDishImageUrl(aiRes.recipe.imageUrl) ? aiRes.recipe.imageUrl : '') ||
           'https://images.unsplash.com/photo-1509722747041-616f39b57569?auto=format&fit=crop&w=900&q=80',
         tags: [platformLabel, 'KI-Import']
       };
@@ -5328,6 +5667,7 @@ async function importFromWebsiteUrl() {
             ...aiRes.recipe,
             imageUrl:
               bestCoverImage ||
+              (isLikelyDishImageUrl(aiRes.recipe.imageUrl) ? aiRes.recipe.imageUrl : '') ||
               parsed?.imageUrl ||
               'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80',
             tags: ['KI-Import', hostTag]
@@ -5373,10 +5713,14 @@ async function importFromWebsiteUrl() {
           const jinaJson = await jinaRes.json();
           const data = jinaJson.data || {};
           const combinedText = (data.title ? `Title: ${data.title}\n` : '') + (data.content || '');
+          const jinaDishImg = extractBestImageFromMarkdownOrJina(data, combinedText, url);
+          if (jinaDishImg && !bestCoverImage) {
+            bestCoverImage = jinaDishImg;
+          }
 
           let extracted = null;
           if (state.household.geminiKey && combinedText.length > 60) {
-            if (statusEl) statusEl.textContent = '✨ KI ordnet Beschreibung, Zutaten & Zubereitung zu...';
+            if (statusEl) statusEl.textContent = '✨ KI ordnet Beschreibung, Titelbild, Zutaten & Zubereitung zu...';
             const aiRes = await extractRecipeWithGeminiAI(combinedText, url);
             if (aiRes.ok && aiRes.recipe) {
               extracted = aiRes.recipe;
@@ -5399,6 +5743,7 @@ async function importFromWebsiteUrl() {
               sourceUrl: data.url || url,
               imageUrl:
                 bestCoverImage ||
+                (isLikelyDishImageUrl(extracted.imageUrl) ? extracted.imageUrl : '') ||
                 parsed?.imageUrl ||
                 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80',
               tags: [state.household.geminiKey ? 'KI-Import' : 'Web-Import', hostTag],
@@ -6283,10 +6628,238 @@ function getAllSelectableRecipesForPlanner() {
   return Array.from(map.values());
 }
 
+const PLANNER_DAY_SHORT_LABELS = {
+  Montag: 'Mo',
+  Dienstag: 'Di',
+  Mittwoch: 'Mi',
+  Donnerstag: 'Do',
+  Freitag: 'Fr',
+  Samstag: 'Sa',
+  Sonntag: 'So'
+};
+
+function getSelectedAiWeekPlanDays() {
+  const allDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  if (!Array.isArray(state.aiSelectedDays) || state.aiSelectedDays.length === 0) {
+    state.aiSelectedDays = [...allDays];
+  }
+  return allDays.filter((d) => state.aiSelectedDays.includes(d));
+}
+
+function renderAiWeekPlanDayChips() {
+  const wrap = document.getElementById('aiWeekPlanDayChips');
+  if (!wrap) return;
+  const allDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  const selected = new Set(Array.isArray(state.aiSelectedDays) ? state.aiSelectedDays : allDays);
+  const btn = document.getElementById('aiWeekPlanBtn');
+  if (btn && !btn.disabled) {
+    btn.textContent =
+      selected.size === 7
+        ? '✨ KI-Wochenplan (Alle 7 Tage)'
+        : selected.size === 0
+          ? '✨ Bitte mindestens 1 Wochentag wählen'
+          : `✨ KI-Wochenplan (${selected.size} ${selected.size === 1 ? 'Tag' : 'Tage'} planen)`;
+  }
+  wrap.innerHTML = allDays
+    .map((day) => {
+      const isOn = selected.has(day);
+      return `<button type="button" class="day-select-chip ${isOn ? 'active' : ''}" onclick="toggleAiWeekPlanDay('${day}')">${isOn ? '✓ ' : ''}${PLANNER_DAY_SHORT_LABELS[day] || day}</button>`;
+    })
+    .join('');
+}
+
+function toggleAiWeekPlanDay(day) {
+  if (!Array.isArray(state.aiSelectedDays)) {
+    state.aiSelectedDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  }
+  if (state.aiSelectedDays.includes(day)) {
+    state.aiSelectedDays = state.aiSelectedDays.filter((d) => d !== day);
+  } else {
+    state.aiSelectedDays.push(day);
+  }
+  try {
+    localStorage.setItem('kt_ai_selected_days', JSON.stringify(state.aiSelectedDays));
+  } catch (_) {}
+  renderAiWeekPlanDayChips();
+}
+
+function toggleAllAiWeekPlanDays() {
+  const allDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  if (Array.isArray(state.aiSelectedDays) && state.aiSelectedDays.length === allDays.length) {
+    state.aiSelectedDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag'];
+    showToast('Werktags (Mo–Fr) ausgewählt');
+  } else {
+    state.aiSelectedDays = [...allDays];
+    showToast('Alle 7 Wochentage (Mo–So) ausgewählt');
+  }
+  try {
+    localStorage.setItem('kt_ai_selected_days', JSON.stringify(state.aiSelectedDays));
+  } catch (_) {}
+  renderAiWeekPlanDayChips();
+}
+
+function getWeekDayPortions(day, recipe) {
+  const custom = Number(state.weekPlanPortions?.[day]);
+  if (!isNaN(custom) && custom >= 1 && custom <= 30) return custom;
+  return Number(recipe?.portions) || 4;
+}
+
+async function changeWeekDayPortions(day, delta) {
+  const allRecipes = getAllSelectableRecipesForPlanner();
+  const rec = allRecipes.find((r) => r.id === state.weekPlan[day]);
+  const current = getWeekDayPortions(day, rec);
+  const next = Math.max(1, Math.min(30, current + delta));
+  if (!state.weekPlanPortions || typeof state.weekPlanPortions !== 'object') {
+    state.weekPlanPortions = {};
+  }
+  state.weekPlanPortions[day] = next;
+  try {
+    localStorage.setItem('kt_weekplan_portions', JSON.stringify(state.weekPlanPortions));
+  } catch (_) {}
+  touchWeekPlanTimestamp();
+  await dbPut('meta', { key: 'weekPlanPortions', value: state.weekPlanPortions });
+  renderWeekPlan();
+  broadcastSyncUpdate();
+}
+
+async function addPlannedDayToShoppingList(day, event) {
+  if (event) event.stopPropagation();
+  const allRecipes = getAllSelectableRecipesForPlanner();
+  const r = allRecipes.find((x) => x.id === state.weekPlan[day]);
+  if (!r) return;
+  const basePortions = Number(r.portions) || 4;
+  const targetPortions = getWeekDayPortions(day, r);
+  (r.ingredients || []).forEach((ing) => {
+    upsertShoppingListIngredient({
+      name: ing.name,
+      spec: formatIngredientAmountAndUnit(ing, basePortions, targetPortions) || 'nach Bedarf',
+      recipeTitle: `${day}: ${r.title} (${targetPortions} Port.)`
+    });
+  });
+  await saveShoppingList();
+  renderShoppingList();
+  renderOffersTab();
+  showToast(`🛒 Zutaten für ${day} (${targetPortions} Portionen) auf die Einkaufsliste gesetzt!`);
+}
+
+async function executePlannerOnlineSearch() {
+  const inp = document.getElementById('plannerOnlineSearchInput');
+  const box = document.getElementById('plannerOnlineResultsBox');
+  const query = (inp?.value || '').trim();
+  if (!query) {
+    showToast('Bitte ein Gericht oder eine Zutat zum Suchen eingeben');
+    if (inp) inp.focus();
+    return;
+  }
+  if (box) {
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-size:12px; color:#93c5fd; padding:8px;">🔎 Suche online nach Rezepten für „<strong>${escapeHtml(query)}</strong>“...</div>`;
+  }
+  const settled = await Promise.allSettled([searchChefkochLive(query), searchFoodblogsLive(query)]);
+  let hits = [];
+  settled.forEach((s) => {
+    if (s.status === 'fulfilled' && Array.isArray(s.value)) hits = hits.concat(s.value);
+  });
+  state.plannerOnlineResults = hits.slice(0, 8);
+  renderPlannerOnlineSearchResults();
+}
+
+function renderPlannerOnlineSearchResults() {
+  const box = document.getElementById('plannerOnlineResultsBox');
+  if (!box) return;
+  const hits = state.plannerOnlineResults || [];
+  if (hits.length === 0) {
+    box.style.display = 'block';
+    box.innerHTML = `<div style="font-size:12px; color:var(--text-muted); padding:8px;">Keine Online-Treffer gefunden. Probiere z.B. „Lasagne“, „Gnocchi“ oder „Curry“.</div>`;
+    return;
+  }
+  const days = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  box.style.display = 'block';
+  box.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="font-size:11px; font-weight:800; color:#6ee7b7;">🌐 ${hits.length} Online-Rezepte gefunden – direkt Tag zuweisen:</span>
+      <button type="button" class="pill-btn" style="font-size:10px; padding:2px 7px;" onclick="document.getElementById('plannerOnlineResultsBox').style.display='none'">✕ Schließen</button>
+    </div>
+    <div style="max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:7px;">
+      ${hits
+        .map(
+          (item, idx) => `
+        <div style="background:#020617; border:1px solid var(--border); border-radius:10px; padding:8px; display:flex; gap:9px; align-items:center;">
+          <img src="${escapeHtml(item.imageUrl)}" alt="${escapeHtml(item.title)}" style="width:54px; height:54px; border-radius:9px; object-fit:cover; flex-shrink:0;" onerror="this.src='https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=300&q=80'" />
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:10px; color:var(--primary-light); font-weight:700;">${escapeHtml(item.badgeIcon || item.provider)} · ⏱ ${item.prepTime || 25} Min</div>
+            <div style="font-size:12.5px; font-weight:800; line-height:1.2; margin:2px 0 5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(item.title)}</div>
+            <div style="display:flex; gap:5px; align-items:center;">
+              <select id="plannerHitDay-${idx}" class="select-input" style="padding:4px 7px; font-size:11px; flex:1;">
+                ${days.map((d) => `<option value="${d}">${d}${state.weekPlan[d] ? ' (belegt)' : ' (frei)'}</option>`).join('')}
+              </select>
+              <button id="plannerHitBtn-${idx}" type="button" class="pill-btn" style="background:var(--primary); color:#fff; border:none; font-size:11px; padding:5px 9px; white-space:nowrap;" onclick="assignPlannerOnlineResult(${idx})">
+                ＋ Einplanen
+              </button>
+            </div>
+          </div>
+        </div>`
+        )
+        .join('')}
+    </div>
+  `;
+}
+
+async function assignPlannerOnlineResult(idx) {
+  const item = (state.plannerOnlineResults || [])[idx];
+  if (!item) return;
+  const daySel = document.getElementById(`plannerHitDay-${idx}`);
+  const day = daySel?.value || 'Montag';
+  const btn = document.getElementById(`plannerHitBtn-${idx}`);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Lade...';
+  }
+  try {
+    let targetRecipe = state.recipes.find(
+      (r) => r.sourceUrl && normalizeUrlForRecipeMatch(r.sourceUrl) === normalizeUrlForRecipeMatch(item.url)
+    );
+    if (!targetRecipe) {
+      const parsed = await fetchAndParseSingleRecipeSilent(item.url);
+      if (parsed && (parsed.ingredients?.length > 0 || parsed.steps?.length > 0)) {
+        if (!parsed.imageUrl && isLikelyDishImageUrl(item.imageUrl)) {
+          parsed.imageUrl = item.imageUrl;
+        }
+        targetRecipe = await saveImportedRecipe(parsed);
+      }
+    }
+    if (targetRecipe && targetRecipe.id) {
+      state.weekPlan[day] = targetRecipe.id;
+      touchWeekPlanTimestamp();
+      await dbPut('meta', { key: 'weekPlan', value: state.weekPlan });
+      renderAll();
+      broadcastSyncUpdate();
+      showToast(`✅ „${targetRecipe.title}“ importiert & für ${day} eingeplant!`);
+    } else {
+      showToast('Rezept konnte nicht direkt gelesen werden – öffne Import-Tab...');
+      const urlInp = document.getElementById('webImportUrl');
+      if (urlInp) urlInp.value = item.url;
+      switchTab('import');
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '＋ Einplanen';
+    }
+  }
+}
+
 async function autoFillWeekPlan() {
   const allRecipes = getAllSelectableRecipesForPlanner();
   if (allRecipes.length === 0) return;
-  const days = Object.keys(state.weekPlan);
+  const targetDays = Array.isArray(state.aiSelectedDays) && state.aiSelectedDays.length > 0
+    ? Object.keys(state.weekPlan).filter((d) => state.aiSelectedDays.includes(d))
+    : Object.keys(state.weekPlan);
+
+  if (targetDays.length === 0) {
+    showToast('Bitte wähle oben mindestens einen Wochentag aus.');
+    return;
+  }
 
   // Dedupliziere den Kandidaten-Pool strikt nach ID, Rezepttitel und Quell-URL,
   // damit NIEMALS dasselbe Gericht doppelt in einer Woche vorkommen kann!
@@ -6315,9 +6888,20 @@ async function autoFillWeekPlan() {
   const usedIds = new Set();
   const usedTitles = new Set();
   const usedUrls = new Set();
+  // Bereits fest geplante Gerichte an NICHT ausgewählten Tagen vormerken, um Duplikate zu verhindern
+  Object.keys(state.weekPlan).forEach((d) => {
+    if (!targetDays.includes(d) && state.weekPlan[d]) {
+      const existing = allRecipes.find((x) => x.id === state.weekPlan[d]);
+      if (existing) {
+        usedIds.add(existing.id);
+        const tk = normalizeDishKeyForDedup(existing);
+        if (tk) usedTitles.add(tk);
+      }
+    }
+  });
   let lastCat = '';
 
-  for (const day of days) {
+  for (const day of targetDays) {
     const isNotUsed = (r) => {
       const tKey = normalizeDishKeyForDedup(r);
       const uKey = r.sourceUrl ? r.sourceUrl.split('?')[0].replace(/\/+$/, '').toLowerCase() : '';
@@ -6341,14 +6925,13 @@ async function autoFillWeekPlan() {
         dbPut('recipes', pick).catch(() => {});
       }
     } else {
-      // Falls weniger als 7 Rezepte insgesamt existieren, lasse den restlichen Tag frei statt Duplikat
       state.weekPlan[day] = '';
     }
   }
 
   touchWeekPlanTimestamp();
   renderAll();
-  showToast('✨ Wochenplan mit 7 verschiedenen Gerichten (ohne Duplikate) gefüllt!');
+  showToast(`✨ Wochenplan für ${targetDays.length} ${targetDays.length === 1 ? 'Tag' : 'Tage'} ohne Duplikate gefüllt!`);
   await dbPut('meta', { key: 'weekPlan', value: state.weekPlan });
   broadcastSyncUpdate();
 }
@@ -6379,6 +6962,7 @@ function parseNumericMacro(str) {
 
 function renderWeekPlan() {
   if (typeof renderTodayPlanQuickBanner === 'function') renderTodayPlanQuickBanner();
+  renderAiWeekPlanDayChips();
   const container = document.getElementById('weekPlanContainer');
   const summaryEl = document.getElementById('weekNutritionSummary');
   if (!container) return;
@@ -6502,15 +7086,16 @@ function renderWeekPlan() {
               .join('')}</optgroup>`
           : '';
 
-      // Rezept-Vorschaukarte für den ausgewählten Tag
+      // Rezept-Vorschaukarte für den ausgewählten Tag (inkl. einstellbarer Portionsgröße pro Tag!)
       let previewHtml = '';
       if (selectedRecipe) {
         const meta = getCategoryMeta(selectedRecipe.category);
         const basePortions = Number(selectedRecipe.portions) || 4;
+        const dayPortions = getWeekDayPortions(day, selectedRecipe);
         const topIngs = (selectedRecipe.ingredients || [])
           .slice(0, 4)
           .map((ing) => {
-            const amt = formatIngredientAmountAndUnit(ing, basePortions, basePortions);
+            const amt = formatIngredientAmountAndUnit(ing, basePortions, dayPortions);
             return `${amt ? amt + ' ' : ''}${ing.name}`;
           })
           .join(' · ');
@@ -6518,7 +7103,7 @@ function renderWeekPlan() {
 
         const fullIngsList = (selectedRecipe.ingredients || [])
           .map((ing) => {
-            const amt = formatIngredientAmountAndUnit(ing, basePortions, basePortions);
+            const amt = formatIngredientAmountAndUnit(ing, basePortions, dayPortions);
             return `• ${amt ? `<strong>${escapeHtml(amt)}</strong> ` : ''}${escapeHtml(ing.name)}`;
           })
           .join('<br/>');
@@ -6540,9 +7125,13 @@ function renderWeekPlan() {
                   ${meta.icon} ${escapeHtml(meta.label)}
                 </div>
                 <div class="planner-preview-title">${escapeHtml(selectedRecipe.title)}</div>
-                <div class="planner-preview-meta">
+                <div class="planner-preview-meta" style="align-items:center; gap:6px;">
                   <span>⏱ ${selectedRecipe.prepTime || 20} Min</span>
-                  <span>· 👥 ${basePortions} Port.</span>
+                  <span style="display:inline-flex; align-items:center; gap:4px; background:rgba(99,102,241,0.16); border:1px solid rgba(99,102,241,0.4); border-radius:999px; padding:1px 6px;" onclick="event.stopPropagation();">
+                    <button type="button" style="background:none; border:none; color:#fff; font-weight:900; font-size:13px; padding:0 4px; cursor:pointer;" onclick="changeWeekDayPortions('${day}', -1)">−</button>
+                    <strong style="color:#e0e7ff; font-size:11px;">👥 ${dayPortions} Port.</strong>
+                    <button type="button" style="background:none; border:none; color:#fff; font-weight:900; font-size:13px; padding:0 4px; cursor:pointer;" onclick="changeWeekDayPortions('${day}', 1)">＋</button>
+                  </span>
                   ${
                     selectedRecipe.nutrition?.kcal
                       ? `<span class="tag-mini tag-kcal" style="padding:1px 6px; font-size:10px;">🔥 ${selectedRecipe.nutrition.kcal} kcal</span>`
@@ -6553,7 +7142,7 @@ function renderWeekPlan() {
             </div>
 
             <div class="planner-preview-ings-short">
-              <strong>🥕 Zutaten-Vorschau (${(selectedRecipe.ingredients || []).length}):</strong>
+              <strong>🥕 Zutaten (${dayPortions} Port.):</strong>
               ${escapeHtml(topIngs)}${moreCount > 0 ? ` <em>(+${moreCount} weitere)</em>` : ''}
             </div>
 
@@ -6566,7 +7155,7 @@ function renderWeekPlan() {
                   : ''
               }
               <div style="margin-bottom:8px;">
-                <div style="font-weight:700; color:var(--primary-light); margin-bottom:3px;">Alle Zutaten (${basePortions} Portionen):</div>
+                <div style="font-weight:700; color:var(--primary-light); margin-bottom:3px;">Alle Zutaten (${dayPortions} Portionen):</div>
                 ${fullIngsList}
               </div>
               <div>
@@ -6579,13 +7168,13 @@ function renderWeekPlan() {
               <button class="pill-btn" style="font-size:11px; padding:5px 9px;" onclick="togglePlannerInlinePreview('${day}')">
                 📋 <span id="planner-toggle-lbl-${day}">Zutaten & Schritte aufklappen</span>
               </button>
-              <button class="pill-btn" style="font-size:11px; padding:5px 9px; background:var(--accent); color:#fff; border:none;" onclick="addRecipeToShoppingList('${escapeHtml(selectedRecipe.id)}', event)">
-                🛒＋ Einkaufsliste
+              <button class="pill-btn" style="font-size:11px; padding:5px 9px; background:var(--accent); color:#fff; border:none;" onclick="addPlannedDayToShoppingList('${day}', event)">
+                🛒＋ Einkaufsliste (${dayPortions}P)
               </button>
-              <button class="pill-btn" style="font-size:11px; padding:5px 9px; background:var(--primary); color:#fff; border:none;" onclick="startCookMode('${escapeHtml(selectedRecipe.id)}')">
+              <button class="pill-btn" style="font-size:11px; padding:5px 9px; background:var(--primary); color:#fff; border:none;" onclick="state.activeScalePortions=${dayPortions}; startCookMode('${escapeHtml(selectedRecipe.id)}')">
                 🔥 Kochmodus
               </button>
-              <button class="pill-btn" style="font-size:11px; padding:5px 9px; background:var(--bring); color:#fff; border:none;" onclick="exportRecipeToBring('${escapeHtml(selectedRecipe.id)}')">
+              <button class="pill-btn" style="font-size:11px; padding:5px 9px; background:var(--bring); color:#fff; border:none;" onclick="state.activeScalePortions=${dayPortions}; exportRecipeToBring('${escapeHtml(selectedRecipe.id)}')">
                 🛒 Bring!
               </button>
               <button class="pill-btn" style="font-size:11px; padding:5px 9px;" onclick="openRecipeDetail('${escapeHtml(selectedRecipe.id)}')">
@@ -6667,10 +7256,12 @@ function togglePlannerVisualPicker(day) {
 
 async function updateWeekDay(day, value) {
   if (value === '__SEARCH_NEW__') {
-    switchTab('import');
-    const inp = document.getElementById('liveSearchInput');
-    if (inp) inp.focus();
     renderWeekPlan();
+    const inp = document.getElementById('plannerOnlineSearchInput');
+    if (inp) {
+      inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => inp.focus(), 200);
+    }
     return;
   }
 
@@ -6721,11 +7312,12 @@ async function addWholeWeekToShoppingList() {
       if (r) {
         count++;
         const basePortions = Number(r.portions) || 4;
+        const dayPortions = getWeekDayPortions(day, r);
         (r.ingredients || []).forEach((ing) => {
           upsertShoppingListIngredient({
             name: ing.name,
-            spec: formatIngredientAmountAndUnit(ing, basePortions, basePortions) || 'nach Bedarf',
-            recipeTitle: `${day}: ${r.title}`
+            spec: formatIngredientAmountAndUnit(ing, basePortions, dayPortions) || 'nach Bedarf',
+            recipeTitle: `${day}: ${r.title} (${dayPortions}P)`
           });
         });
       }
@@ -6849,44 +7441,39 @@ function getDefaultInviteMemberName() {
   return others.length > 0 ? others[others.length - 1] : '';
 }
 
-function getHouseholdInviteShareUrl(targetMemberName = '') {
-  const base = getPublicShareBaseUrl();
-  let url = `${base}/?household=${encodeURIComponent(state.household.code)}`;
+function buildHouseholdHashFragment(targetMemberName = '') {
+  const hashParams = new URLSearchParams();
+  hashParams.set('household', state.household.code);
   const chosenMember = String(targetMemberName || getDefaultInviteMemberName() || '').trim();
   if (chosenMember) {
-    url += `&member=${encodeURIComponent(chosenMember)}`;
+    hashParams.set('member', chosenMember);
+  }
+  const secret = getOrCreateHouseholdSyncSecret();
+  if (secret) {
+    hashParams.set('syncSecret', secret);
   }
   if (isSupabaseSyncConfigured()) {
-    url += `&sbUrl=${encodeURIComponent(normalizeSupabaseBaseUrl(state.household.sbUrl))}`;
-    url += `&sbKey=${encodeURIComponent(state.household.sbKey.trim())}`;
+    hashParams.set('sbUrl', normalizeSupabaseBaseUrl(state.household.sbUrl));
+    hashParams.set('sbKey', state.household.sbKey.trim());
   }
   if (state.household.geminiKey && state.household.geminiKey.trim().length > 10) {
-    url += `&aiKey=${encodeURIComponent(state.household.geminiKey.trim())}`;
+    hashParams.set('aiKey', state.household.geminiKey.trim());
   }
   if (state.household.backupAiKey && state.household.backupAiKey.trim().length > 10) {
-    url += `&aiKey2=${encodeURIComponent(state.household.backupAiKey.trim())}`;
+    hashParams.set('aiKey2', state.household.backupAiKey.trim());
   }
-  return url;
+  return hashParams.toString();
+}
+
+function getHouseholdInviteShareUrl(targetMemberName = '') {
+  const base = getPublicShareBaseUrl();
+  // Sicherheit: Sensible Schlüssel liegen ausschließlich im #Hash-Fragment (werden nie per HTTP an Webserver gesendet!)
+  return `${base}/#${buildHouseholdHashFragment(targetMemberName)}`;
 }
 
 function getHouseholdLanShareUrl(targetMemberName = '') {
   const lanBase = (state.lanAppUrl || DEFAULT_LAN_APP_URL).replace(/\/+$/, '');
-  let url = `${lanBase}/?household=${encodeURIComponent(state.household.code)}`;
-  const chosenMember = String(targetMemberName || getDefaultInviteMemberName() || '').trim();
-  if (chosenMember) {
-    url += `&member=${encodeURIComponent(chosenMember)}`;
-  }
-  if (isSupabaseSyncConfigured()) {
-    url += `&sbUrl=${encodeURIComponent(normalizeSupabaseBaseUrl(state.household.sbUrl))}`;
-    url += `&sbKey=${encodeURIComponent(state.household.sbKey.trim())}`;
-  }
-  if (state.household.geminiKey && state.household.geminiKey.trim().length > 10) {
-    url += `&aiKey=${encodeURIComponent(state.household.geminiKey.trim())}`;
-  }
-  if (state.household.backupAiKey && state.household.backupAiKey.trim().length > 10) {
-    url += `&aiKey2=${encodeURIComponent(state.household.backupAiKey.trim())}`;
-  }
-  return url;
+  return `${lanBase}/#${buildHouseholdHashFragment(targetMemberName)}`;
 }
 
 function renderHouseholdSettings() {
@@ -6934,29 +7521,45 @@ function renderHouseholdSettings() {
         <div style="font-size:12.5px; font-weight:800; color:${state.household.syncStatus === 'error' ? '#fbbf24' : sbReady ? '#6ee7b7' : '#93c5fd'};">
           ${syncHeadline}
         </div>
-        <span class="validity-pill valid-active" style="font-size:10px;">v44 · ${escapeHtml(state.household.code)}</span>
+        <span class="validity-pill valid-active" style="font-size:10px;">🔒 RLS v45 · ${escapeHtml(state.household.code)}</span>
       </div>
       <div style="font-size:11.5px; color:#cbd5e1; line-height:1.45; margin-bottom:6px;">
         ${
           sbConnectedClean
-            ? `Rezepte, Einkaufsliste &amp; Wochenplan bleiben automatisch über <strong>Supabase</strong> (WLAN, Mobilfunk &amp; VPN) synchron.`
+            ? `Rezepte, Einkaufsliste &amp; Wochenplan (inkl. Portionen) bleiben automatisch &amp; per <strong>RLS-Haushalts-Schlüssel</strong> geschützt über <strong>Supabase</strong> synchron.`
             : `Kostenlose Cloud-Datenbank über <a href="https://supabase.com" target="_blank" rel="noopener" style="color:#6ee7b7; text-decoration:underline; font-weight:700;">supabase.com ↗</a> (Frankfurt, keine Kreditkarte).`
         }
         ${state.household.lastSyncError ? `<div style="color:#f87171; margin-top:5px; font-weight:700;">❌ ${escapeHtml(state.household.lastSyncError)}</div>` : ''}
       </div>
       ${sbConnectedClean ? '' : sbConfigFieldsHtml}
       <details style="margin-top:4px; font-size:11px; color:var(--text-muted);">
-        <summary style="cursor:pointer; font-weight:700; color:#93c5fd;">⚙️ Technik, Supabase-Daten &amp; SQL-Skript</summary>
+        <summary style="cursor:pointer; font-weight:700; color:#93c5fd;">🔒 Technik, Supabase-Daten &amp; Sicherheits-SQL (RLS aktivieren)</summary>
         <div style="margin-top:6px; padding-top:6px; border-top:1px solid var(--border); line-height:1.5;">
           ${sbConnectedClean ? sbConfigFieldsHtml : ''}
-          <div style="margin-bottom:4px;">SQL Editor → New Query:</div>
-          <pre style="background:#020617; color:#6ee7b7; padding:8px; border-radius:8px; font-size:10px; overflow-x:auto; white-space:pre-wrap; margin-bottom:6px;">create table if not exists household_sync (
+          <div style="margin-bottom:4px; color:#6ee7b7; font-weight:700;">Supabase SQL Editor → New Query (behebt die Supabase-Sicherheitswarnung dauerhaft):</div>
+          <pre style="background:#020617; color:#6ee7b7; padding:8px; border-radius:8px; font-size:10px; overflow-x:auto; white-space:pre-wrap; margin-bottom:6px;">create table if not exists public.household_sync (
   household_code text primary key,
+  sync_secret text,
   data jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now()
 );
-alter table household_sync disable row level security;
-grant select, insert, update, delete on table public.household_sync to anon, authenticated;</pre>
+alter table public.household_sync add column if not exists sync_secret text;
+alter table public.household_sync enable row level security;
+revoke truncate, references, trigger on table public.household_sync from anon, authenticated;
+grant select, insert, update, delete on table public.household_sync to anon, authenticated;
+drop policy if exists "kt_rls_select" on public.household_sync;
+drop policy if exists "kt_rls_insert" on public.household_sync;
+drop policy if exists "kt_rls_update" on public.household_sync;
+drop policy if exists "kt_rls_delete" on public.household_sync;
+create policy "kt_rls_select" on public.household_sync for select to anon, authenticated
+  using (household_code = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-code'), '') and (sync_secret is null or sync_secret = '' or sync_secret = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-secret'), '')));
+create policy "kt_rls_insert" on public.household_sync for insert to anon, authenticated
+  with check (household_code = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-code'), '') and length(coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-secret'), '')) &gt;= 12 and (sync_secret is null or sync_secret = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-secret'), '')));
+create policy "kt_rls_update" on public.household_sync for update to anon, authenticated
+  using (household_code = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-code'), '') and (sync_secret is null or sync_secret = '' or sync_secret = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-secret'), '')))
+  with check (household_code = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-code'), '') and length(coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-secret'), '')) &gt;= 12);
+create policy "kt_rls_delete" on public.household_sync for delete to anon, authenticated
+  using (household_code = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-code'), '') and sync_secret = coalesce((current_setting('request.headers', true)::json-&gt;&gt;'x-household-secret'), ''));</pre>
           • Öffentliche URL: <a href="${escapeHtml(pubBase)}" target="_blank" rel="noopener" style="color:#34d399; font-weight:700; word-break:break-all;">${escapeHtml(pubBase)}</a><br/>
           • Heim-WLAN: <a href="${escapeHtml(lanBase)}" target="_blank" rel="noopener" style="color:#93c5fd; font-weight:700; word-break:break-all;">${escapeHtml(lanBase)}</a>
         </div>
@@ -6967,24 +7570,26 @@ grant select, insert, update, delete on table public.household_sync to anon, aut
   const qrImg = document.getElementById('householdQrImg');
   const qrHint = document.getElementById('householdQrHint');
   if (qrImg) {
-    qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(shareUrl)}`;
+    // Datenschutz & Sicherheit: Sende NIEMALS API-Keys oder syncSecret an externe QR-Bilddienste!
+    // Der QR-Code enthält nur die öffentliche App-Adresse; für die komplette Schlüssel-Übergabe dient der „🔗 Teilen / WhatsApp“-Button!
+    const safePublicOnlyUrl = `${getPublicShareBaseUrl()}/`;
+    qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(safePublicOnlyUrl)}`;
     qrImg.style.display = 'block';
     qrImg.style.cursor = 'pointer';
     qrImg.onclick = () => {
       if (typeof openCustomImageLightbox === 'function') {
         openCustomImageLightbox(
-          `https://api.qrserver.com/v1/create-qr-code/?size=420x420&margin=12&data=${encodeURIComponent(shareUrl)}`,
-          `Haushalt „${state.household.code}“ – QR-Code zum Mitbenutzer-Beitritt`,
-          shareUrl
+          `https://api.qrserver.com/v1/create-qr-code/?size=420x420&margin=12&data=${encodeURIComponent(safePublicOnlyUrl)}`,
+          `KochTresor Web-App öffnen (Für Auto-Sync bitte „🔗 Einladungs-Link teilen“ nutzen)`,
+          safePublicOnlyUrl
         );
       }
     };
     if (qrHint) {
       qrHint.style.display = 'block';
       qrHint.innerHTML = `
-        📱 <strong>Mit zweitem Smartphone Kamera öffnen & QR-Code scannen!</strong><br/>
-        <span style="font-size:10.5px; color:#6ee7b7;">🌐 Öffentlicher HTTPS-Zugang (überall erreichbar): <a href="${escapeHtml(shareUrl)}" target="_blank" rel="noopener" style="color:#6ee7b7; text-decoration:underline;">${escapeHtml(shareUrl)}</a></span><br/>
-        <span style="font-size:10.5px; color:var(--text-muted);">🏠 Heim-WLAN Direktlink: <a href="${escapeHtml(lanUrl)}" target="_blank" rel="noopener" style="color:var(--primary-light); text-decoration:underline;">${escapeHtml(lanUrl)}</a></span>
+        🔒 <strong>Sicherheits-Schutz aktiv:</strong> Deine Schlüssel werden niemals an fremde QR-Server übertragen.<br/>
+        <span style="font-size:10.5px; color:#6ee7b7;">👉 Nutze für Mitbenutzer den Button <strong>„🔗 Einladungs-Link teilen“</strong> (sendet alle Zugangsdaten verschlüsselt im <code>#Hash</code> direkt von Handy zu Handy!).</span>
       `;
     }
   }
@@ -7133,6 +7738,7 @@ function buildLocalSyncPayload() {
       updatedAt: item.updatedAt || Date.now()
     })),
     weekPlan: state.weekPlan || {},
+    weekPlanPortions: state.weekPlanPortions || {},
     weekPlanUpdatedAt: state.weekPlanUpdatedAt || 0,
     members: state.household.members || [],
     membersUpdatedAt: state.lastMembersUpdateAt || Date.now(),
@@ -7151,7 +7757,14 @@ function normalizeSupabaseBaseUrl(rawUrl) {
 
 function getSupabaseHeaders(extra = {}) {
   const key = (state.household.sbKey || '').trim();
-  const base = { apikey: key, ...extra };
+  const code = (state.household.code || 'FAMILIE').trim().toUpperCase();
+  const secret = getOrCreateHouseholdSyncSecret();
+  const base = {
+    apikey: key,
+    'x-household-code': code,
+    'x-household-secret': secret,
+    ...extra
+  };
   // Legacy JWT-Keys (eyJ...) benötigen zusätzlich Authorization: Bearer; neue sb_publishable_-Keys nur apikey!
   if (key.startsWith('eyJ')) {
     base.Authorization = `Bearer ${key}`;
@@ -7182,8 +7795,11 @@ async function supabaseGetHouseholdData() {
 async function supabaseUpsertHouseholdData(payload) {
   const baseUrl = normalizeSupabaseBaseUrl(state.household.sbUrl);
   const code = (state.household.code || 'FAMILIE').trim().toUpperCase();
+  const secret = getOrCreateHouseholdSyncSecret();
   const url = `${baseUrl}/rest/v1/household_sync?on_conflict=household_code`;
-  const res = await fetch(url, {
+
+  // 1. Primär mit sync_secret (für aktiviertes Row Level Security / RLS) speichern
+  let res = await fetch(url, {
     method: 'POST',
     headers: getSupabaseHeaders({
       'Content-Type': 'application/json',
@@ -7191,10 +7807,33 @@ async function supabaseUpsertHouseholdData(payload) {
     }),
     body: JSON.stringify({
       household_code: code,
+      sync_secret: secret,
       data: payload,
       updated_at: new Date().toISOString()
     })
   });
+
+  // 2. Sanfter Rückfall auf 3 Spalten, falls der Nutzer das neue RLS-SQL-Skript noch nicht im Supabase SQL Editor ausgeführt hat
+  if (!res.ok && res.status === 400) {
+    const errCheck = await res.text().catch(() => '');
+    if (/sync_secret/i.test(errCheck)) {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: getSupabaseHeaders({
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates,return=minimal'
+        }),
+        body: JSON.stringify({
+          household_code: code,
+          data: payload,
+          updated_at: new Date().toISOString()
+        })
+      });
+    } else {
+      throw new Error(`Supabase SAVE HTTP ${res.status}${errCheck ? `: ${errCheck.slice(0, 120)}` : ''}`);
+    }
+  }
+
   if (!res.ok) {
     const errTxt = await res.text().catch(() => '');
     throw new Error(`Supabase SAVE HTTP ${res.status}${errTxt ? `: ${errTxt.slice(0, 120)}` : ''}`);
@@ -7460,6 +8099,13 @@ async function applyIncomingSyncData(remote, silentRender = false) {
         ...remote.weekPlan
       };
       state.weekPlanUpdatedAt = remoteWeekTs;
+      if (remote.weekPlanPortions && typeof remote.weekPlanPortions === 'object') {
+        state.weekPlanPortions = { ...state.weekPlanPortions, ...remote.weekPlanPortions };
+        try {
+          localStorage.setItem('kt_weekplan_portions', JSON.stringify(state.weekPlanPortions));
+        } catch (_) {}
+        await dbPut('meta', { key: 'weekPlanPortions', value: state.weekPlanPortions });
+      }
       try {
         localStorage.setItem('kt_weekplan_ts', String(remoteWeekTs));
       } catch (_) {}
@@ -7849,8 +8495,8 @@ async function downloadStandaloneAppFile() {
   try {
     showToast('📦 Erstelle eigenständige App-Datei zum direkten Download...');
     const [cssRes, jsRes] = await Promise.all([
-      fetch('./styles.css?v=17').then((r) => r.text()).catch(() => ''),
-      fetch('./app.js?v=17').then((r) => r.text()).catch(() => '')
+      fetch('./styles.css?v=45').then((r) => r.text()).catch(() => ''),
+      fetch('./app.js?v=45').then((r) => r.text()).catch(() => '')
     ]);
 
     const currentDoc = document.documentElement.outerHTML;
@@ -8721,9 +9367,25 @@ function getDirectKaufdaBrochureViewerUrl(retailerOrOffer, page = 1) {
 // ============================================================================
 const KAUFDA_LIVE_BROCHURE_PAGES = {"Norma":{"pageCount":30,"contentId":"a8a32361-949a-48de-897f-88bfe3b0233c","pageUuids":["fd0603f8-2219-4fef-9367-27e766372b0d","a1a4c94e-ab5d-41fe-82cb-4ee7f5c81ac4","45c05a02-e267-4920-aba3-99e43be65c75","c7e3c7dc-223a-4b56-9bff-f6653ccbbc15","8cae31c9-b3d5-413a-93cf-eb497e8ac0cd","c66dabae-bbbd-4367-b533-57e373258b03","fd6348a6-db8b-4294-b3e5-a8ca5eab4ef6","e5c026f5-af4c-49b1-8e95-c3299b943502","64274eac-5a44-4c95-b7e3-52dad319774f","a82794e3-c49c-430e-8826-e0288d001136","d390085b-08d0-4889-b6b0-0876d5c70cee","e670fa98-26df-4208-988e-87e3335d13a2","6f6e03db-47ed-4ea2-a396-76ab650b4a0b","b3507681-8021-4300-b1fd-394a5c14e316","2eaabcd6-0cdb-4855-b15b-357ecee780c9","c09216a9-8494-4d89-ad7c-57006947972b","7c898ecd-29fd-4157-a0df-30a19a5e9985","a3e5a16b-3765-4e6f-a068-b56bf3f7a8d8","ca11e592-7586-4139-b8ae-f7d10d49264e","f7188eb1-539d-4142-a68e-adfacb9b791f","1c009e28-4902-4022-9d89-001dcf5017c1","d1026d45-86f5-472f-bf82-48108dce3d61","9360a46e-563d-4de8-9671-5808bca11c03","abe65090-d7bc-40a0-813b-ab885b4b0dfc","06724a9e-8d7f-4cb3-8bae-a234d91890d7","08162cf7-6308-441f-9bab-23c9dfdaaf13","dc38b622-77c3-451a-9331-0ffaa96b7e37","8346c03f-4022-4dbd-b400-3e6e830f3bc3","2f8bff92-a4bc-4d68-b067-babd7c20f8ea","680fe76c-2af1-4f97-97ac-15390d58afd9"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T22:00:00.000+0000","publisher":"Norma","title":"Mehr fürs Geld","coverUrl":"https://content-media.bonial.biz/fd0603f8-2219-4fef-9367-27e766372b0d/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/fd0603f8-2219-4fef-9367-27e766372b0d/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"tegut":{"pageCount":22,"contentId":"63115be1-ef63-4072-a94e-9ec8e917fb42","pageUuids":["01fac455-a1d9-4f79-b515-4904f7be774d","e95c859e-51b5-4f56-8b0f-0abba8ea1199","e282b4c9-3885-4697-b6a7-b118bd1e96eb","4e56b841-9662-461f-b05e-092068478d0e","56457c9d-f215-4007-92ab-5c4c30cee81a","140bc60f-f45a-44b0-860b-842c6ddea47c","d71bb1aa-d6af-4a0b-8b8b-904e89239d9d","af14e8d8-6966-483f-930c-0021ac61f0a4","a54a0f17-a0bd-4e7d-8275-b19dff038b08","2ddd32b6-f46b-46c2-960d-75353689d70e","37be3a75-c850-4405-aaf6-7678f370048b","deff3b2e-6ec0-4512-b414-b01f8a3df485","ba538d47-3e22-4d05-8a27-f2d2eb45c352","bf72673c-3464-4097-95fd-29bc666de54e","a1de186d-9915-43f8-90c0-c73a4610f158","303e4acf-48c6-430f-a1fc-faa69a648fc6","6b76897a-fdc5-4b1b-a297-9d78aeeafe58","1f39987b-2e5e-4e8d-9f32-bb9bdd86cd41","58dcf3e8-42c8-46b8-b85c-5442d975005a","2046adf9-7cbb-4f41-b950-b2e74b7bedc0","3c93cd37-dee7-4ae2-bca6-669afe95464a","d509e758-e5d5-4d5b-9af3-25dfda6f1b0e"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T22:00:00.000+0000","publisher":"tegut","title":"tegut… gute Lebensmittel","coverUrl":"https://content-media.bonial.biz/01fac455-a1d9-4f79-b515-4904f7be774d/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/01fac455-a1d9-4f79-b515-4904f7be774d/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"Lidl":{"pageCount":73,"contentId":"3e8c10a5-071a-417f-85f0-fc41988915c7","pageUuids":["49387853-083e-40f7-af11-6f4a699535c0","75d2a45d-2e5b-44cc-90bc-53612a6c5e4a","87c0e71f-3d30-4cb8-8ccb-689400544dec","c08b115c-bc51-457d-9761-f55c78294eb6","dfc47144-147a-4254-a684-cd999e42b12b","f4cdbe79-80a5-4527-8ed6-e87c1db206c3","c93db0b8-8d30-43a4-a0cd-091dafd25e99","c675b753-c68f-4551-b995-302ae629fb81","594f70fd-0b85-4e69-b998-ab35aa1caeb6","03d1e065-fd17-4e64-b32a-61af70e38cfa","53240506-762b-4687-93b5-7d06765653a9","937b2dd9-b273-4401-8b93-2c14182133d4","712285aa-edcd-43e8-a9b2-98978b49a182","4655e426-be42-415c-829f-d5abc89dc8c2","d9856fbd-7417-4986-aa89-86d54402df7a","5ed320bb-be53-41fe-9a88-e0f3726f1860","b311d53c-8c87-4354-96fb-1b9558d7cf98","210297f2-168d-45c6-acb3-0e908c1fb825","0a1f117d-97f3-4bb9-9bb7-046538697dfa","ad7b79d7-8d1f-4f73-9d0e-af19c34948fa","fd20dac5-7aff-4889-9792-b7d3f825e600","d6ec8b51-3a3c-455d-aec3-95abeb46b303","489cab2e-10cd-4436-bd82-b408b6b6ea89","f91e7ded-49cf-4fea-aa23-d755a6970c2e","87bf995d-bba0-44e9-be39-9d00d9a9df9b","113a19ee-c3c5-48be-ab71-446719be588e","5208b439-20ce-4790-93b5-633eae3cc6cd","0f40fd4e-c2b5-49ae-8135-7e77be40e964","6f870ac8-d469-477a-852f-2f59662b8229","853e2c11-ac9c-49c8-aadf-4a442bba47ff","97ab6e8d-2f73-43d0-b77b-080d569bfab9","64b131f6-5559-4ccb-a57b-aa2f098af2c7","c3810233-89c9-402d-8ada-f5bdbfc8b33f","84886fcd-1131-4319-9dc6-1ed3fcd289bb","fcec8361-13de-4bca-bb1d-fcde4b9a60f1","853c81b5-b843-41fb-8382-9dc1f662d89c","512b0cb5-e601-4a79-afde-75751b382003","9348293e-989c-4330-8c1d-348b09abf88a","dac286d8-a040-4111-8687-3b6295da11f8","2fdb1b2f-681b-48d8-b576-c279483198a7","076764a9-4845-41d8-b82c-b6689fe168f8","f6e7f759-00b4-4647-97c7-b808903fd46d","566e4d1a-39dc-4856-b018-77178d2db58d","43b4ffe0-f4e4-4964-ab10-d4f1c16e7308","5352ce07-2882-4c73-bbc7-66327fdada40","c7959641-d303-4903-a2f8-038feeac546e","7bd2f918-4946-4adc-a722-827c59e0b648","caf1d49f-856d-44a0-8a2d-7db8cd1f2c63","1793614d-11b2-486e-bea0-c6ba0ab5e4a1","0e668b56-79f8-4eb4-b4a6-62b9f60d0e7e","13f95845-e9e0-4008-adb4-c99b5b783d41","cff96a89-504c-4c4f-98f1-09d124977ca8","57fbca67-1e74-46bc-aa3e-28c7aa88a37f","d771045e-6f9a-40c7-a42b-487de429cf60","076a8655-52c8-497a-bb7d-2e8167b7bae6","c84a507d-f691-44f4-b58d-9e76a07c3ac9","a8b42ffd-e032-4b8c-a476-baea218850ea","0786ffad-6bfe-4be8-8dec-9a4d9be91490","14ea4749-6d0a-47e3-b59f-eeb5299cf2d7","0494c945-da9c-4d7f-9290-5efab2678fac","3bf3544d-388e-497c-a1bd-88c6e1ac8295","19969033-68f6-4187-92f9-7af8a0757631","8ff96e27-1ff8-4be0-bd01-f3fb00891cf9","4d190ebe-5294-477f-a7f3-46a0c63c57ec","b88cc43f-0d35-4e15-85c8-272faaa6d7fa","bb7d0852-8a74-4182-94aa-2da3611f4276","011fae9d-97ee-4cc9-89b8-4544e7623eff","b9a14e28-3216-41f0-b1dc-27ba8de9a8fb","6c3e59a8-d50b-4fd3-89b9-f121af781540","fb88631a-eff0-438a-b6bd-6c15a48ac0ac","331cb1bd-dd31-4c2a-a603-cf9b385f8cdf","72427454-abcf-4eae-99b0-89f19044dc70","57727109-9bd8-414f-a296-fb2dae1dedad"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T22:00:00.000+0000","publisher":"Lidl","title":"LIDL LOHNT SICH","coverUrl":"https://content-media.bonial.biz/49387853-083e-40f7-af11-6f4a699535c0/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/49387853-083e-40f7-af11-6f4a699535c0/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"Penny":{"pageCount":44,"contentId":"8af5adf7-ab90-453d-bb6b-8929def3b055","pageUuids":["d0991dac-88ad-4dde-a8ba-7693774bf9b0","fdc3191e-3707-4491-9971-eeaf0dd2df4b","7eea6241-33ac-4804-8c1b-0426092ee2e3","f1e2cb19-4389-4ce5-8fc0-f18be0546c10","ba9a5bc6-4e9d-4850-ba39-3c78d1cebc4c","46f69c53-d141-4f0d-aae5-8aef29bb751a","6883621d-6712-4e6f-aa39-0fea75b80486","41cef37a-9f8d-4200-9a6b-69e2824da670","a6456c88-2c57-4e29-a897-6371159e1abb","247da290-8333-47e0-8ea5-1f2bf408e24d","570411ad-1d93-4910-8c6d-ef52bbfd484c","163928fd-85e6-4569-a6d3-46eea7e85ac1","8789d4bc-4c7d-4e68-b96b-b56da757f7f2","1b194c7a-60fa-4065-97f6-0170ac41b294","5c24db50-eb74-4d50-981e-086df554663e","6351fcac-8bda-480a-aba0-4d0aa238226f","8824f349-d456-4207-862a-5838fa0df4ae","0f369bb7-bc03-487f-ae2f-1275a9717e61","35feddb7-e1d8-4dde-a18b-3731be4f4179","8c65527b-4779-4a15-a6b7-673ff8459929","f801ce02-5512-47a1-ad11-4bb58543b8bf","324c32d7-e18e-4756-98a8-87099881edf8","220700b1-07dd-46b8-9866-36210d9f3608","c2b29980-e4df-4d71-a892-2c1cc317e76e","05b622fd-2ad6-4965-8c73-f5cff051e2cd","a1668b61-8a4a-48d4-8484-91d51c3a1d40","9ac7d0db-f43c-4148-86cd-a077a893d018","74c217af-a317-4009-a539-2171dc243874","4476d789-5734-4ede-ad80-2800c594fa4a","c4174c1f-2716-4523-b1ab-cd9df7355c48","80cf6ef0-60a7-4b99-92b5-659214729ef6","24c14293-73ff-4abb-9872-778809bc4430","2c1841ad-58a1-4c12-8e97-6c70b937b7f4","330bd0e4-9d3f-496b-ac5a-c51ba32a0fab","f5a5ea92-4618-49b1-97ff-040af9f6ede4","bdfc55a0-450b-4abd-9c0b-229598689d25","ce8bf6c4-540a-4a22-bb95-917a98bc1ba6","36c87250-a5cd-4a32-bac7-ccb1ce3e3781","4f0d45a0-84ff-4589-9116-49e2e96e58f1","6c0538d8-f5d4-4259-b9ce-aa1a5bce6b13","de9443f6-16e3-4a44-8360-e5da0f2312df","91933532-8c4e-4ce5-acbb-d94a5937e1eb","62c66a14-a0b0-495c-9969-2af409793b5d","f54833b7-da33-43c2-a217-3de93d46f775"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T23:00:00.000+0000","publisher":"Penny","title":"Wer günstig will, muss Penny.","coverUrl":"https://content-media.bonial.biz/d0991dac-88ad-4dde-a8ba-7693774bf9b0/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/d0991dac-88ad-4dde-a8ba-7693774bf9b0/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"ALDI Nord":{"pageCount":56,"contentId":"6c21c979-269e-4bc0-b537-5bbb1a51b90e","pageUuids":["1f7a81a7-b1ff-4e1d-9e4f-cbbc18975c6b","b942bba9-f82c-47d8-a3ac-7bcf88b6c6e3","c927e9ca-ad07-425b-b482-3b361699fa4e","810b7162-5741-4b7c-a5a1-73dab497a75d","3f954d10-e35a-42a3-869b-3e28e8c34392","a1688da7-cfb9-49a7-ba27-c32dec0aeb85","a9f39739-2aa9-41b1-b2bd-70e81dfc74e9","ee9359df-6b60-4ad6-b3db-8efcf09ef1ac","03db14a7-cd2e-471d-aaac-0bb6e81477b1","5ad34236-1d53-4fb4-913b-eb69c74cf8f8","3203cf80-3e40-47bc-a182-7ce022972a99","5efecfdf-4547-456a-abb3-02970ad658f4","dfd26fa9-6fdd-49f1-8b7b-9f6162f0aa32","c998768e-3b2d-4d8b-aa0b-09e63a7e8973","d65eebaf-c00d-448e-9d10-6b6a9ecba803","b7b21526-5f4e-499b-8baf-9cd62af08d0b","63a5d933-0c5a-4f95-aaec-b388d7912127","7df6abe6-1888-44ef-8caf-94575bb09d3a","27a11c74-5c1f-41ce-ade3-45ecd56ddd4d","5f33e6a6-d8a5-433c-9f89-3980c187bcfb","f0b94911-d88d-4e57-87db-927fe0440ca2","ca5c825e-a46c-4936-8673-85fcb4db9234","2c956d3b-e10d-4978-8c82-74018bf2a730","a71f302d-2661-4cd4-862f-6d049af974cc","27474291-3fb7-4b35-b06e-4cc491eb7f25","b5463bf1-78e7-4d44-8f0e-c10343dade59","e1b6563a-087e-42a8-9fe2-60736c0d6289","41cf4fa7-6558-46f3-90d6-59dfcde3acf8","d474e672-d652-40e9-9bb9-4b9b8b2b75f9","f783e825-122b-43eb-ae15-78a057b9383f","a23201b6-3863-465d-8bc9-3f6a71b0f6f9","514c7c87-5c52-4f0d-b541-e83478aee91f","410d6d2b-e52e-406b-ab4b-c2f10d421d83","1bf948eb-3729-437e-bd38-0a22ed22c6b5","1da64994-0b91-425e-a188-c6a8f34523be","c0822fb9-4e1a-4c73-935d-9a2b2a453d10","86ffed53-110d-4330-93bd-d2a7805ab769","3e721443-4950-453e-a4ba-c1959e712fa3","abc796b1-8869-47de-849f-bd0cc583f7d2","a0a05fa4-7bb3-4ff0-a8c8-3840ba286c66","b7566ae8-541a-47a9-9702-ecc75a9e1ee1","714cc9b7-74c7-4974-886d-120bd7d0454c","7ea023a4-757b-473d-9bec-0516b8ebe435","1f2b5439-cd17-4bfe-b053-72a181d74e4a","ca84f976-b341-4c85-ba9f-09156758aa9d","9e9bcf5d-8e26-45e0-ab09-694f5990667c","ad0f3b71-2417-4785-8138-4b30cdac4984","243b4eaa-08b0-4332-bef9-9bc6e78b0c02","caa79d7c-ad29-4e69-a9bc-7e4ffc0b6e9c","d037a256-695d-4f72-b6e4-61ca00d4512b","4daf9d9b-fd91-424e-9203-c0701a56be1a","5651d8ae-69be-4a49-b51f-5e911b3697c4","5bcfe504-fb37-4ed5-9102-0cb9715aaf29","fb3edec4-69f3-4b6d-a0a2-0cc39b822fb7","cdf20f43-b51e-499d-b6fe-1c4d81a680e1","6bcaa37f-0d7a-4db3-8cf6-486a688668b7"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T21:00:00.000+0000","publisher":"ALDI Nord","title":"Aktuelle Angebote","coverUrl":"https://content-media.bonial.biz/1f7a81a7-b1ff-4e1d-9e4f-cbbc18975c6b/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/1f7a81a7-b1ff-4e1d-9e4f-cbbc18975c6b/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"Netto":{"pageCount":72,"contentId":"dd41fc4e-eb8e-40a5-840b-736745a67bbd","pageUuids":["f2359d23-e812-4661-b127-088c992c79d9","2b9494f0-195d-485a-b71d-0a7a215a994b","16bfb3b0-1ad2-4a2b-a6e2-15b568b908f9","a06d51a9-16f9-442e-a0bd-0e71740ec9b6","7491913a-8a83-4527-8a27-275de29fa14f","28994c8d-f03b-4aef-bed7-7ba09be6d6cd","516cd67b-64f0-4498-bb39-88f5924f4af5","75c1d9f1-d701-47a3-980a-341f4f3ea464","49342293-5f87-4bc7-9200-4c3d45af0416","fe617d37-f0a4-4d06-8307-3543f3d4c461","b12dff31-37cc-4bc6-ab1e-4216b59e44d8","a50979ba-de90-4547-8a7b-8f2ab1fa0085","157c2fd9-d646-4e72-9b04-b9941fa1ea08","c3123a67-bcd2-43c1-837a-1b443dbc3ab1","5722e48e-67a7-4a48-8b64-3fc46b8a153d","5cae1185-d86c-44e2-ad38-20d2022a1e4c","2639fec1-5568-4290-8f72-a6d1b43ff735","9b4b14d3-c6c8-44f1-a503-9dc90abcda2f","c6e9dea8-87b8-4ead-820b-000042ee3769","e0241728-5766-4772-b136-c63640e4a7a0","c38e8a77-8442-4e9b-afb5-149d26edc05d","607f0e11-7f30-4cbe-a7e4-44474535dc1b","388ab1a8-effd-4e9e-8b9f-9591856eec1a","e6e8cf05-301f-4e8d-b1a7-f2734722616a","26ebf0e9-162b-45c9-81ca-888fb2c9075a","842381c8-0500-4da7-9554-25b7977e1e3a","a8bc5329-12c7-47c2-b441-dc18fbcec0d5","9786d75c-73e3-4025-81b1-4d2e9b1c1935","5a144e88-3fc0-47d4-9ba7-fc2294d35098","3507bb92-bd3d-4c96-a5d6-8dc7e68804c5","be86383e-5a59-490b-9e83-9b5ca6cee62f","cfebab5d-041a-41d8-9ab5-672d549a1f35","2384ccc8-3890-46e0-a88c-28f8cbbfd060","5b513e80-7bf9-43d5-b5cc-b79c921fa0cc","ae22b36a-7772-4ae6-a6c0-1e45c7b5d271","7d1ccfe6-a97b-42dc-8e5c-b56b9c3ba060","f25ba24a-cf7a-4f05-9438-a5a512e805ad","dc2f74ea-9183-4d6a-8462-0b261ffdb308","7a5db40b-06c4-42f8-9524-10705497ac1b","b81baa9d-667e-47e0-878f-34fdaa636d77","e1213c1d-f0d1-4423-bb43-618a238ff525","fdeb5300-aae0-454c-baf0-84bad7bfed1e","5998f6b8-d804-4408-ab14-64ea0e0773de","1b819a66-5bb6-4be7-8a5a-c5173b80a150","4a6ddb7f-983b-4cd7-aa2f-b89bcef97f95","f3b019d1-1905-4d08-b1d3-1b92b71757d8","8f07e290-6985-485c-bcb3-463e0247b470","3b5f1112-c803-41bb-8507-de485a25fdee","f5f98b72-7795-4edd-9d3c-83c1cbd80c19","85cf08df-5778-4e7a-9714-4f66631aaa67","5292b6b0-78ea-4afd-8cca-214ea7b51956","095128f1-7e8d-4a78-b92b-d3108d74a20c","8cfb84fd-a5af-49ff-9447-87af4a3ec35c","7852162d-1081-4548-b46c-e621b3ea1f4a","1e5a2473-9dbc-4c2e-b395-e945e1494faa","47340eec-8dfe-4ddf-ad60-e8ab116dae1b","f0cb74cc-a879-4ea1-bbe7-66ab57cb9cc2","d64ee978-cd9e-49da-ba5e-e983e4f805c3","4106cba1-47db-4ae7-a17c-160718e03bbe","babda6bd-76e5-47f2-b95b-c761a227d8d8","ba54174b-c824-48fc-a231-a76870762efd","b22ad414-9ff9-4018-9e51-51a0486e94c0","bb96b0fa-67eb-4266-bfa5-065a7b5d5955","2c553d68-943c-41d5-9f4b-aa061cb6bb4b","3e0a25d6-f4a1-4fa9-a151-ec1ec7bcb6f5","cbfb1eab-cd3d-4aa5-9747-d1e44fdbc179","dc624ab6-f499-4534-aee9-05fd4b7b9f7e","973ef0a6-cae3-4b33-86a0-1c1878901c05","92847470-e521-47c0-a821-72269ed0e9a2","813a5aad-5655-45df-a4da-828629e3784d","880a3da2-9d65-4a7b-9ce2-ac6acb513c95","2a2265fd-117d-423d-8621-cc7c34846a3f"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T19:00:00.000+0000","publisher":"Netto Marken-Discount","title":"Aktuelle Angebote","coverUrl":"https://content-media.bonial.biz/f2359d23-e812-4661-b127-088c992c79d9/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/f2359d23-e812-4661-b127-088c992c79d9/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"Globus":{"pageCount":52,"contentId":"04988c94-c8bf-43e5-a26d-4d28f6167085","pageUuids":["0c7e052b-84ec-4d56-8b73-420cf530d223","50ba42b4-c4a6-48f8-9824-b600e949a400","2056b9d4-072d-40d4-8aaf-45d74d2d4f55","95103596-6d20-4560-ba1d-e64dbfae8e13","ed4d3721-9d97-446e-9570-33b283885401","19faf264-c5f2-47a2-9830-8a49e7aaccf7","0afc4814-824b-432f-93a7-d3f8934bb6e4","f2bfbc11-4acd-47b9-bacb-b59aa889a2bd","c49db374-9b9d-46d3-adc0-254feec2c8ee","e0e83000-2b15-4b7d-8681-990976bed929","29f243e8-e3ef-4ee4-ae69-52cac956b3a7","0cc6788d-a627-464b-bd70-32033ba96ac2","439d9334-8b40-4d6c-81c7-ddf4ade90484","b3192d5f-6dcd-4bbe-ad45-4ce5e9a41229","742a8251-1379-4f6d-80be-08bc68d1374c","da09ac2c-b9d3-4d14-8ee4-1fd2f62081d1","973ca5ce-a9c5-4a12-9423-7b27bf862a7e","a3606ca7-f27a-4af8-b088-1e76de33f499","799416fe-fdcb-408b-ad97-5f71cd97ebd3","601dd505-4eaf-4e78-9f28-239d4e62f27d","eb193617-d175-41ee-ac9d-068a83677384","d77b60e8-83bf-4bf1-bb10-a6aa028ca187","151132de-cc0f-4946-a8f6-8220c2cdc4f4","0e95a5fd-03f2-4607-b3b8-ac60123fde61","1ea472cc-248e-40f4-9878-898ba8c0c29f","a92975a6-d2d7-4ec8-bdab-2f6b48c4bf05","7342bf2d-230a-4007-aa9f-39d7d694804f","6a68a922-a4b1-451e-9c83-e668703033d7","80821944-e364-4ad2-a207-a0541db48ec6","713b4fb9-fd8a-46a2-a7c3-da85ca72c0eb","af650abd-3d69-4608-9511-6855ce5b5152","8b59d127-4338-408e-8137-18a9b16e5655","ea27efd1-cfed-4cf7-bb62-8fd6e850b2ab","5b23aae0-fbb9-4914-b864-78169e179be3","2ad8a1b6-fb06-4754-938b-b9650b3f98b2","a55a60e5-1799-41d7-8485-dea7e978be95","babc37ce-a5ec-4fe3-aa78-afe0ad44773b","b2a3f693-dbd7-4509-9b9d-6864d6477775","5aedb412-7ce9-4e0b-9dd7-dff585a5b7d3","508f8ad0-e503-4b7a-8972-352d6ce28c51","03c1f881-d064-47d9-8432-c66140eadcca","0b81aee7-459f-4161-bfba-76c373c10d9a","ab519378-1f26-48b0-bdfc-fb2da5fb9243","ffa1548f-dee3-424b-b623-ec0b66935ce6","3d297d79-1392-4e5a-82a4-2ce8a5873cec","cd92b2ea-f16b-4819-b892-d38a8a206248","ef985a7e-19cc-458f-a6c8-fdc2e983502b","922a8165-b053-41d6-869c-d32d690a13f0","97e02e1e-5026-46e8-9495-2e9b7574fadc","abb531ac-a053-42b0-9893-bfbc25d21885","31d824d3-457b-4b10-a56c-875d2d236511","82502acf-1b1d-4c16-ae44-5a66cd746f92"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T22:00:00.000+0000","publisher":"GLOBUS","title":"Aktuelle Angebote","coverUrl":"https://content-media.bonial.biz/0c7e052b-84ec-4d56-8b73-420cf530d223/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/0c7e052b-84ec-4d56-8b73-420cf530d223/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"Kaufland":{"pageCount":60,"contentId":"b0206124-539f-4c4b-a8c8-1e71bc6a71e9","pageUuids":["a2f7ec5b-c11a-4b69-bbdf-cd4df4701ba2","b4ba91d3-6169-470e-b214-67891372e744","63026337-d3a9-4863-9388-0f05bc99146f","c0cb9bc1-aed9-435c-b3aa-d2f15ade87c3","6d92d7af-3600-492a-b662-21f5d07580e3","3b974864-a0dd-4368-acbf-0a94ec4f3005","c0468c50-9ccd-4090-8cd6-aedfdf9d152d","4f5dd017-abd0-404d-bb1a-e426f16c8b9f","ee2f0090-74be-4425-8259-af3ec1bf75d0","e36d5203-a6eb-4793-88e4-075467626c12","49d7ccd4-5280-49f2-af53-2936c7cc6f32","2d390b4c-0ba1-4577-90bf-848f641a7782","f8220091-c956-48d9-a3d6-a8130a51d0b2","4f6d290e-3604-4f0d-a2c7-84d3edaf4a9b","5d8570bc-121a-4f3b-ba1e-a9729d4f503b","258c6aa8-bcd2-4b48-952a-079ac9ba7725","9dd8cd39-a07d-4e83-8032-a72970ad0d85","536e4050-561e-45f0-a426-090889c6cfb4","cb1456de-8375-43c9-98d7-43fd97f4c666","5c189f9c-4539-4705-9167-2bbc7db3bed2","a101fcd6-b4ee-4655-be1e-0eb42fcf293d","01b7c994-d064-4901-9b5f-3b0e22de2ebf","6197f719-e1de-4d28-b7d0-4b7484520612","344e2e14-9613-42d0-9a3a-a02f6dcac69b","acd4c5ac-cb90-4846-8075-6e0d5d3ed5a4","0ed47299-3856-4566-a0b1-e4b0dc6de314","eed12731-5b00-411b-97e2-f433138f3027","814a8ed5-4de7-4368-adea-559138292c89","d7b51ced-c04f-465e-957c-dc8f7af8635b","1342215a-5f79-4b45-8a68-093cd963447b","f690582b-03ee-4dc6-8b9e-fbb502112da9","418f7a99-c3a7-4143-a6fa-a291fe3e3e7c","a91e2117-45fe-4df1-b534-1c523ad59060","4bce6b22-f423-4370-b209-670f2c00cb90","21ba8b02-f4e3-495e-a854-85d578e586a4","19227579-ff57-4c81-8766-e309a3a62d1b","dcb26ddd-c8fc-4b59-a7dc-bf1214fda4d8","126cacbe-f929-4832-bbca-dd0d23b2e13e","df1fe014-9cbc-417a-8cc6-c44e130dcad1","c1850f80-e2dc-423c-9f78-e49d1a2a4ec9","d7a4afda-f359-4daf-a2a8-63a5b73a6989","51fdc18d-9283-4afc-ba36-8866589019c2","1e86b804-fadf-4d42-a166-dac340f9ddfd","a54078ea-eaca-461b-86ee-bde6e2f110a6","4b601291-1b9d-49e0-bf2a-107601cc540e","2ec4c2ba-4c90-4cc2-a37b-b1d8effe4e56","994e61c3-6274-440f-a3e7-af8159cf95e7","5f9e8339-5151-426a-aa32-1d6bb4fc757e","0a771f1d-67e0-4b4c-bfe6-dd088e5317ee","2e7b7d15-9a7d-4d7e-bdcf-585b2abe54e9","c1ab0439-ae6a-46c7-b56e-596c01a4c334","469db272-7279-4476-b0db-382632ed54bd","c4680439-6465-4b06-99a0-63c453a592d2","eec78e33-9540-4e12-b52a-631f85b58d8a","a5c24a64-3a9a-475f-a7b1-e72042564dd1","d7b709e5-b3bb-4a4a-b944-8f5d4b40b844","30df5b14-dd56-4896-85c4-4e1283240526","2fb1d593-eb77-4183-a6ce-c08f0e9bc60e","59abe02e-a30f-42a8-8ed3-6c937e39713d","e1d3a7af-83a3-4806-a2dc-275b7a8d950d"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T18:00:00.000+0000","publisher":"Kaufland","title":"Hier bin ich richtig","coverUrl":"https://content-media.bonial.biz/a2f7ec5b-c11a-4b69-bbdf-cd4df4701ba2/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/a2f7ec5b-c11a-4b69-bbdf-cd4df4701ba2/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"EDEKA":{"pageCount":32,"contentId":"1d0ddfe1-0e75-4ec1-90dd-46a46bda31d9","pageUuids":["3387c75a-c5b9-4d29-995c-6ef2d684e368","f2d13c45-f040-4a5d-8550-3174fc71770a","e0125294-fe34-47d5-a344-2122dafc559b","556fb33e-bcd1-431b-a061-ba9d63819a4e","2510823c-6e9d-418b-a484-a088bf2601dd","38ca3aff-72c2-41a3-afd4-3a0b154b7812","ae5419a5-6043-493d-bb21-1f1e96499a0d","bcee7a2c-dc7f-4205-9b6e-f8d37beeea60","76a2f1e9-41ec-4365-ad98-eb2e4df609ea","7ddd0019-4efe-40a5-a337-cd7fcd1e8795","a65a4048-365d-4ed6-ba86-b5630a560bdd","58a06c44-2cf3-42d1-8980-d99b243aaeba","e56c7df6-79ae-4b47-876d-5e6943198a36","c2edfe19-e480-46b3-b1f3-9d4eb11d1832","e413c7a9-eb5a-49e1-9c7a-5de51ba943ce","d3880229-f908-44da-86b3-c85f2322c359","1416def6-79b3-45d2-be50-ef8fce21c398","3cc5ae8a-423e-4ed1-b346-753cff2d36f5","0b1d7375-225b-48e9-b1c8-9e50b930b058","4f77db08-7048-4620-a752-c3dc00bdb2ae","a2db5e82-d71a-4066-b19f-99d9bdbd818c","063aa8ee-1336-46cb-9a55-a5f99e292a72","c015e05c-029d-49b8-8160-3352a0651503","15883898-fc1c-451e-8d15-5e2f7e244b5d","17ed41b1-1488-4c4b-a670-c3374e1f2f40","99a1b64e-b78f-4afa-8d7f-2a80d825eb19","b4bd273b-05b0-4d05-9713-fdf9f83a4ef2","d1d29f5f-fc20-4509-923a-1e7276e459d2","42dd6e2a-049e-4f51-b104-6091c17c31e0","514a02d9-c295-4afb-931c-615ac191e085","c98c692b-8c04-49e7-b194-ec38734982b0","da948829-3a45-44be-978b-aad7bd0870db"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T21:00:00.000+0000","publisher":"EDEKA","title":"Wir lieben Lebensmittel.","coverUrl":"https://content-media.bonial.biz/3387c75a-c5b9-4d29-995c-6ef2d684e368/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/3387c75a-c5b9-4d29-995c-6ef2d684e368/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"ALDI Süd":{"pageCount":37,"contentId":"71ee6eda-0684-4416-9d94-8210741492b5","pageUuids":["a861ecfa-fd06-4a51-b168-aae1623971f2","19215165-a8d9-4f57-bc6d-c31511245e9a","e16a996a-9b27-46b6-bf21-24bd1b740f73","c0316704-8ce2-4dbc-b8ef-9ce15b405b63","427cb1a9-2d67-4c37-aced-a2d9d1b90403","124c6423-c00b-4ca1-9f6f-f5ab54a5e0bc","24dfb3a3-610a-4ae6-b714-b62cc11020ef","9c709e04-7075-45c8-984f-886368350d1b","dcffc860-9db8-446d-9685-6c39ea460c07","4a5acc57-c53f-48d8-8051-65b616436c5b","1cf6c62e-aa85-4602-849e-da32c0c8706f","29ad60cd-a293-4750-87ef-d098fcb80369","b1f06dd0-b5e9-43b7-8076-5856443ca50b","df01018a-2574-4502-99fd-e2960f5112c2","f07fd3ca-5659-46fa-87aa-17aebf72a73b","d409d0a9-b661-4f65-881a-541e83f51cbc","70faf6a7-30dc-4fec-8838-f18688186298","e49b8b4d-c7b4-4586-97ae-5984db00a71c","908bee25-14a0-40e1-9561-ec4e4b1bc9f4","e1b61a47-c49c-499b-a755-00f9f78e34a7","5d17f8fe-e624-4ba8-8d4a-b08d2b982b1c","bff62bd3-25e4-430d-84a1-b59782ba2ee4","cf7f4f6f-9255-44eb-990f-6bf65f861301","fa055e9d-b3bb-44c1-817b-723c169eb965","df074306-1574-4095-9b33-e7f2978ad8ef","4c390acc-a968-43db-ba57-60b23ab66283","b5f82f48-a2fe-4f61-9b4e-a6c294d9644f","d3b3d28f-22ea-4c31-9113-3a0a92c8f4b0","5aba5649-d0a3-4f64-ab8f-1ffbf2bf1e2d","0bd11d9e-8dcd-4e40-88da-11ec28bab253","03f3d85e-e12d-4620-a1fc-f79faa95b93d","7cff89dd-cb78-4b4c-90a2-4728bbf5436b","ceca0f19-71d3-4c38-9e1b-b7d9396c02e1","e0ddb3e9-83fe-4ec4-85e4-b67283274571","cc0b0ddc-3bdd-4c77-a99f-1b5231159e9c","d5dd0061-e066-4cab-bb7b-280381ed58be","d0e368b1-cebc-480b-a676-3dcdc431a1f3"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T21:00:00.000+0000","publisher":"ALDI SÜD","title":"Gutes für Alle.","coverUrl":"https://content-media.bonial.biz/a861ecfa-fd06-4a51-b168-aae1623971f2/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/a861ecfa-fd06-4a51-b168-aae1623971f2/zoomlarge_page_0.jpg?impolicy=zoomlarge"},"REWE":{"pageCount":28,"contentId":"8250c199-a6fe-4628-9b75-876c0d735735","pageUuids":["903942a4-c7d8-4229-b2f3-da7240944624","4f9d3e25-2b79-428c-823b-b3722245e9b0","e62f8807-f03b-4607-8c7f-22321ec44764","599b680b-5e5e-4677-85fa-5c8d30f8d46e","4f40b8ff-4e09-481f-9725-25dd186f89df","41aeb1cf-b2a8-4f8d-8890-fd1d7e4ed26b","334b1b15-92e1-436f-aba8-8d9365cd1868","7e27bab1-7add-4e9b-a1d8-fde8cdc0736a","6c826659-44d7-4460-8ba7-e67e3e6cd793","92ae5851-ad9a-4d64-b18d-daddc2b9b62d","b92ce815-0832-423e-8e71-0c0f0b7bd3a5","8b1c97f1-e73a-4d88-be77-4791aeef4e75","c01d379c-e119-4d6f-a1a8-f53ae7a68649","d979572d-4115-4e6e-9a6d-5bac31fa9249","13602569-2918-4b70-bec5-69088d54a2a2","a002bfc5-e6b3-44fb-936e-bcf0002f8d7f","50398a24-008c-47f9-8aa5-6fa567403286","b97da4cd-d6ed-4bd7-9b3a-3ccf7c684fc5","9cc67c68-6aa1-47a1-8ef2-e49d2a7b276a","d54568f9-60ab-4c07-b576-22cac5375aae","199e04dc-2410-4f54-bd3a-cbeddb4aa7e4","190b39bb-7c67-4b34-b65e-f9fcccfd3bb1","381ce7d6-68b3-4717-9563-17cc3f132899","ef321ed1-b6db-4f23-bcd5-4fd23ca86973","0c771dcc-99e8-4fc0-b28c-6e57a8c4aa07","11787143-855f-4c0c-9c87-2f0999ff5b3a","5ab6a979-6f2c-4a34-995c-fa3da8577f47","bcd9f629-0691-4b88-bc07-c1aecf4dac90"],"validFrom":"2026-11-15T23:00:00.000+0000","validUntil":"2026-11-21T22:00:00.000+0000","publisher":"REWE","title":"Dein Markt","coverUrl":"https://content-media.bonial.biz/903942a4-c7d8-4229-b2f3-da7240944624/zoomlarge_page_0.jpg?impolicy=large","highResCoverUrl":"https://content-media.bonial.biz/903942a4-c7d8-4229-b2f3-da7240944624/zoomlarge_page_0.jpg?impolicy=zoomlarge"}};
 
+function getIsoCalendarWeek(dateObj = new Date()) {
+  const d = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+}
+
+function isBrochureDateExpired(validUntilStr) {
+  if (!validUntilStr || !/\d{4}-\d{2}-\d{2}/.test(String(validUntilStr))) return false;
+  const vu = new Date(validUntilStr);
+  if (isNaN(vu.getTime())) return false;
+  // Ein Prospekt gilt als abgelaufen, sobald sein Endzeitpunkt mehr als 2 Stunden in der Vergangenheit liegt
+  return vu.getTime() < Date.now() - 2 * 3600 * 1000;
+}
+
 ALL_RETAILERS_META.forEach((meta) => {
   const liveInfo = KAUFDA_LIVE_BROCHURE_PAGES[meta.id];
-  if (liveInfo) {
+  if (liveInfo && !isBrochureDateExpired(liveInfo.validUntil)) {
     meta.contentId = liveInfo.contentId;
     meta.coverUrl = liveInfo.coverUrl;
     meta.highResCoverUrl = liveInfo.highResCoverUrl;
@@ -8733,16 +9395,26 @@ ALL_RETAILERS_META.forEach((meta) => {
     meta.validUntil = liveInfo.validUntil;
     meta.kaufdaUrl = `https://www.kaufda.de/contentViewer/static/${liveInfo.contentId}?page=1`;
     meta.brochureUrl = meta.kaufdaUrl;
+  } else {
+    // Veraltete Vorwochen-UUIDs verwerfen, damit immer das Prospekt der aktuellen Kalenderwoche geladen wird!
+    meta.contentId = '';
+    meta.pageUuids = [];
+    meta.pages = 'Aktuelle KW';
+    meta.validFrom = '';
+    meta.validUntil = '';
+    meta.needsCurrentWeekFetch = true;
+    meta.kaufdaUrl = meta.cityUrl || `https://www.kaufda.de/Geschaefte/${encodeURIComponent(meta.kaufdaSlug || meta.id)}`;
+    meta.brochureUrl = meta.kaufdaUrl;
   }
 });
 
-// Strenge Händler-Prüfung, damit z.B. bei ALDI Süd niemals ein REWE-Prospekt übernommen wird
+// Strenge Händler-Prüfung, damit z.B. bei ALDI Süd oder V-Markt niemals ein fremdes REWE-Prospekt übernommen wird
 function doesBrochureMatchRetailer(retailerId, pubText) {
   if (!retailerId || !pubText) return true;
   const s = String(pubText);
   const patterns = {
     'REWE': /\brewe\b/i,
-    'EDEKA': /\b(edeka|marktkauf|e\s*center)\b/i,
+    'EDEKA': /\b(edeka|e\s*center)\b/i,
     'Lidl': /\blidl\b/i,
     'ALDI Süd': /aldi\s*s[üu]d/i,
     'ALDI Nord': /aldi\s*nord/i,
@@ -8752,13 +9424,22 @@ function doesBrochureMatchRetailer(retailerId, pubText) {
     'Norma': /\bnorma\b/i,
     'Globus': /\bglobus\b/i,
     'tegut': /\btegut\b/i,
-    'HIT': /\bhit\b/i
+    'HIT': /\bhit\b/i,
+    'V-Markt': /\b(v-?markt|georg\s*jos\.?\s*kaes|v\s*baumarkt)\b/i,
+    'dm': /\bdm\b/i,
+    'Rossmann': /\brossmann\b/i,
+    'Mueller': /\bm[üu]ller\b/i,
+    'Marktkauf': /\bmarktkauf\b/i,
+    'Alnatura': /\balnatura\b/i,
+    'Denns': /\bdenn'?s\b/i,
+    'Action': /\baction\b/i,
+    'OBI': /\bobi\b/i
   };
   const pat = patterns[retailerId];
   return pat ? pat.test(s) : true;
 }
 
-// Berechnet den Gültigkeitszeitraum (Mo–Sa; am Sonntag bereits Vorschau auf die neue Woche ab Montag!)
+// Berechnet den Gültigkeitszeitraum inkl. aktueller ISO-Kalenderwoche (KW)
 function getCurrentOfferWeekRange(refDate = new Date()) {
   const d = new Date(refDate.getTime());
   const day = d.getDay(); // 0 = Sonntag, 1 = Montag ... 6 = Samstag
@@ -8778,6 +9459,8 @@ function getCurrentOfferWeekRange(refDate = new Date()) {
   saturday.setDate(monday.getDate() + 5);
   saturday.setHours(23, 59, 59, 999);
 
+  const kw = getIsoCalendarWeek(monday);
+
   const fmtShort = (dt) => {
     const dd = String(dt.getDate()).padStart(2, '0');
     const mm = String(dt.getMonth() + 1).padStart(2, '0');
@@ -8785,51 +9468,54 @@ function getCurrentOfferWeekRange(refDate = new Date()) {
   };
   const monShort = fmtShort(monday);
   const satShort = fmtShort(saturday);
-  const cycleKey = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+  const cycleKey = `${monday.getFullYear()}-KW${String(kw).padStart(2, '0')}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
 
   if (isSundayPreview) {
     return {
       monday,
       saturday,
+      kw,
       monShort,
       satShort,
       cycleKey,
       isSundayPreview: true,
       isSaturdayEnding: false,
       badgeClass: 'valid-upcoming',
-      shortBadge: `🆕 Ab Mo, ${monShort} (${monShort}–${satShort})`,
-      fullBadge: `🆕 Neue Woche verfügbar: Gültig Mo, ${monShort} – Sa, ${satShort}`
+      shortBadge: `🆕 KW ${kw} · Ab Mo, ${monShort}`,
+      fullBadge: `🆕 KW ${kw}: Gültig Mo, ${monShort} – Sa, ${satShort}`
     };
   }
   if (isSaturdayEnding) {
     return {
       monday,
       saturday,
+      kw,
       monShort,
       satShort,
       cycleKey,
       isSundayPreview: false,
       isSaturdayEnding: true,
       badgeClass: 'valid-ending',
-      shortBadge: `🟠 Endet heute (Mo, ${monShort} – Sa, ${satShort})`,
-      fullBadge: `🟠 Endet heute: Gültig Mo, ${monShort} – Sa, ${satShort}`
+      shortBadge: `🟠 KW ${kw} · Endet heute (${monShort}–${satShort})`,
+      fullBadge: `🟠 KW ${kw}: Endet heute (Mo, ${monShort} – Sa, ${satShort})`
     };
   }
   return {
     monday,
     saturday,
+    kw,
     monShort,
     satShort,
     cycleKey,
     isSundayPreview: false,
     isSaturdayEnding: false,
     badgeClass: 'valid-active',
-    shortBadge: `🟢 Gültig: Mo, ${monShort} – Sa, ${satShort}`,
-    fullBadge: `🟢 Gültig: Mo, ${monShort} – Sa, ${satShort}`
+    shortBadge: `🟢 KW ${kw} · Mo, ${monShort} – Sa, ${satShort}`,
+    fullBadge: `🟢 KW ${kw}: Gültig Mo, ${monShort} – Sa, ${satShort}`
   };
 }
 
-// Formatiert das exakte Gültigkeitsdatum eines Prospekts oder Angebots (inkl. Kaufland Mo–Sa)
+// Formatiert das exakte Gültigkeitsdatum eines Prospekts oder Angebots (inkl. Prüfung auf aktuelle Kalenderwoche!)
 function formatBrochureValidityBadge(item) {
   const weekFallback = getCurrentOfferWeekRange();
   if (!item) return weekFallback;
@@ -8837,10 +9523,14 @@ function formatBrochureValidityBadge(item) {
   const vfStr = item.validFrom;
   const vuStr = item.validUntil;
   if (vfStr && vuStr && /\d{4}-\d{2}-\d{2}/.test(String(vfStr)) && /\d{4}-\d{2}-\d{2}/.test(String(vuStr))) {
+    if (isBrochureDateExpired(vuStr)) {
+      return weekFallback;
+    }
     const vf = new Date(vfStr);
     const vu = new Date(vuStr);
     if (!isNaN(vf.getTime()) && !isNaN(vu.getTime())) {
       const now = new Date();
+      const kw = getIsoCalendarWeek(now);
       const dayNames = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
       const fmt = (dt) => `${String(dt.getDate()).padStart(2, '0')}.${String(dt.getMonth() + 1).padStart(2, '0')}.`;
       const startDay = dayNames[vf.getDay()];
@@ -8851,8 +9541,8 @@ function formatBrochureValidityBadge(item) {
       if (vf.getTime() > now.getTime() || now.getDay() === 0) {
         return {
           badgeClass: 'valid-upcoming',
-          shortBadge: `🆕 Ab ${startDay}, ${startFmt} (${startFmt}–${endFmt})`,
-          fullBadge: `🆕 Gültig ab ${startDay}, ${startFmt} bis ${endDay}, ${endFmt}`
+          shortBadge: `🆕 KW ${getIsoCalendarWeek(vf)} · Ab ${startDay}, ${startFmt}`,
+          fullBadge: `🆕 KW ${getIsoCalendarWeek(vf)}: Gültig ab ${startDay}, ${startFmt} bis ${endDay}, ${endFmt}`
         };
       }
       const sameDayEnd =
@@ -8862,14 +9552,14 @@ function formatBrochureValidityBadge(item) {
       if (sameDayEnd) {
         return {
           badgeClass: 'valid-ending',
-          shortBadge: `🟠 Bis heute (${startDay}, ${startFmt} – ${endDay}, ${endFmt})`,
-          fullBadge: `🟠 Endet heute (${startDay}, ${startFmt} – ${endDay}, ${endFmt})`
+          shortBadge: `🟠 KW ${kw} · Bis heute (${endFmt})`,
+          fullBadge: `🟠 KW ${kw}: Endet heute (${startDay}, ${startFmt} – ${endDay}, ${endFmt})`
         };
       }
       return {
         badgeClass: 'valid-active',
-        shortBadge: `🟢 ${startDay}, ${startFmt} – ${endDay}, ${endFmt}`,
-        fullBadge: `🟢 Gültig: ${startDay}, ${startFmt} – ${endDay}, ${endFmt}`
+        shortBadge: `🟢 KW ${kw} · ${startDay}, ${startFmt} – ${endDay}, ${endFmt}`,
+        fullBadge: `🟢 KW ${kw}: ${startDay}, ${startFmt} – ${endDay}, ${endFmt}`
       };
     }
   }
@@ -8964,22 +9654,27 @@ function setBrochureShelfLayout(layout) {
   renderBrochuresCarousel();
 }
 
-// Prüft beim App-Start (insbesondere am Sonntag oder bei neuem Wochenzyklus), ob neue Prospekte vorliegen
+// Prüft beim App-Start (insbesondere am Sonntag oder bei neuem Wochenzyklus), ob aktuelle KW-Prospekte vorliegen
 async function autoRefreshBrochuresIfNeeded() {
   try {
     renderOfferLocationAndValidityBar();
     const weekInfo = getCurrentOfferWeekRange();
-    const lastCycle = localStorage.getItem('kt_brochure_week_cycle_v17');
-    const lastFetchTs = parseInt(localStorage.getItem('kt_brochure_last_fetch_ts_v17') || '0', 10);
+    const lastCycle = localStorage.getItem('kt_brochure_week_cycle_v45');
+    const lastFetchTs = parseInt(localStorage.getItem('kt_brochure_last_fetch_ts_v45') || '0', 10);
     const nowTs = Date.now();
     const isSunday = new Date().getDay() === 0;
-    // Am Sonntag alle 3 Stunden prüfen, sonst bei neuem Wochenzyklus oder alle 12 Stunden
-    const maxAgeMs = isSunday ? 3 * 3600 * 1000 : 12 * 3600 * 1000;
+    const maxAgeMs = isSunday ? 2 * 3600 * 1000 : 8 * 3600 * 1000;
 
-    if (lastCycle !== weekInfo.cycleKey || nowTs - lastFetchTs > maxAgeMs) {
+    const enabledSet = typeof getEnabledRetailerIds === 'function' ? getEnabledRetailerIds() : null;
+    const allB = typeof getAllMergedBrochuresList === 'function' ? getAllMergedBrochuresList() : (state.brochures || []);
+    const hasMissingOrExpiredCurrentKw = allB.some(
+      (b) => (!enabledSet || enabledSet.has(b.id)) && (!b.contentId || isBrochureDateExpired(b.validUntil))
+    );
+
+    if (lastCycle !== weekInfo.cycleKey || nowTs - lastFetchTs > maxAgeMs || hasMissingOrExpiredCurrentKw) {
       await refreshAllLiveBrochures(true);
-      localStorage.setItem('kt_brochure_week_cycle_v17', weekInfo.cycleKey);
-      localStorage.setItem('kt_brochure_last_fetch_ts_v17', String(nowTs));
+      localStorage.setItem('kt_brochure_week_cycle_v45', weekInfo.cycleKey);
+      localStorage.setItem('kt_brochure_last_fetch_ts_v45', String(nowTs));
     }
   } catch (_) {}
 }
@@ -9018,7 +9713,18 @@ function selectBestHighResBrochurePageUrl(imagesArr, fallbackUrl) {
 function buildVerifiedHighResPagesForRetailer(retMeta) {
   const baseMeta = ALL_RETAILERS_META.find((r) => r.id === retMeta.id) || retMeta;
   const liveInfo = KAUFDA_LIVE_BROCHURE_PAGES[retMeta.id] || KAUFDA_LIVE_BROCHURE_PAGES[baseMeta.id];
-  const uuids = retMeta.pageUuids || baseMeta.pageUuids || (liveInfo && liveInfo.pageUuids) || [];
+  const validLiveUuids =
+    liveInfo && !isBrochureDateExpired(liveInfo.validUntil) && Array.isArray(liveInfo.pageUuids)
+      ? liveInfo.pageUuids
+      : [];
+  const uuids =
+    (Array.isArray(retMeta.pageUuids) && retMeta.pageUuids.length > 0 && !isBrochureDateExpired(retMeta.validUntil)
+      ? retMeta.pageUuids
+      : null) ||
+    (Array.isArray(baseMeta.pageUuids) && baseMeta.pageUuids.length > 0 && !isBrochureDateExpired(baseMeta.validUntil)
+      ? baseMeta.pageUuids
+      : null) ||
+    validLiveUuids;
 
   if (Array.isArray(uuids) && uuids.length > 0) {
     return uuids.map((uuid, idx) => ({
@@ -9031,8 +9737,13 @@ function buildVerifiedHighResPagesForRetailer(retMeta) {
     }));
   }
 
+  if (!retMeta.contentId) {
+    return [];
+  }
+
   const singleLarge = upgradeKaufdaPageImageUrl(retMeta.coverUrl || retMeta.highResCoverUrl, false);
   const singleUltra = upgradeKaufdaPageImageUrl(retMeta.highResCoverUrl || retMeta.coverUrl, true);
+  if (!singleLarge) return [];
   return [
     {
       number: 0,
@@ -9121,12 +9832,12 @@ async function openInteractiveBrochureReader(retailerId, initialPage = 1, event 
   };
   renderBrochureReaderModalContent();
 
-  // Lade zusätzlich live alle Seiten über Supabase Edge Function (falls verbunden) oder /api/kaufda-brochure
+  // Lade zusätzlich live alle Seiten der aktuellen KW über Supabase Edge Function, /api/kaufda-brochure oder Browser-Fallback
   const liveEndpoints = [];
   if (isSupabaseSyncConfigured()) {
     const sbBase = normalizeSupabaseBaseUrl(state.household.sbUrl);
     liveEndpoints.push(
-      `${sbBase}/functions/v1/kaufda-brochure?retailer=${encodeURIComponent(retMeta.label || retMeta.id)}&retailerId=${encodeURIComponent(retMeta.id)}&contentId=${encodeURIComponent(contentId)}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+      `${sbBase}/functions/v1/kaufda-brochure?retailer=${encodeURIComponent(retMeta.label || retMeta.id)}&retailerId=${encodeURIComponent(retMeta.id)}&kaufdaSlug=${encodeURIComponent(retMeta.kaufdaSlug || '')}&slug=${encodeURIComponent(retMeta.slug || '')}&cityUrl=${encodeURIComponent(cityUrl)}&meinprospektUrl=${encodeURIComponent(meinprospektUrl)}&contentId=${encodeURIComponent(contentId)}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
     );
   }
   liveEndpoints.push(
@@ -9138,55 +9849,95 @@ async function openInteractiveBrochureReader(retailerId, initialPage = 1, event 
       const res = await fetch(apiUrl);
       if (res.ok) {
         const data = await res.json();
-      const pubCheck = `${data?.publisherName || ''} ${data?.title || ''}`;
-      if (doesBrochureMatchRetailer(retMeta.id, pubCheck)) {
-        const pagesArr = Array.isArray(data?.pages)
-          ? data.pages
-          : Array.isArray(data?.pages?.contents)
-            ? data.pages.contents
-            : [];
-        if (pagesArr.length > 0) {
-          const parsedPages = pagesArr.map((p, idx) => {
-            const imgs = p.images || [];
-            const fallbackPageUrl =
-              initialHdPages[idx]?.ultraHdUrl ||
-              upgradeKaufdaPageImageUrl(retMeta.highResCoverUrl || retMeta.coverUrl, true);
-            const hdUrl = selectBestHighResBrochurePageUrl(imgs, fallbackPageUrl);
-            const largeUrl = hdUrl.replace('impolicy=zoomlarge', 'impolicy=large');
-            const pageOffers = [];
-            (p.Validation || p.offers || p.contents || []).forEach((c) => {
-              if (c && c.title) pageOffers.push(c);
+        const pubCheck = `${data?.publisherName || ''} ${data?.title || ''}`;
+        if (doesBrochureMatchRetailer(retMeta.id, pubCheck) && !isBrochureDateExpired(data?.validUntil)) {
+          const pagesArr = Array.isArray(data?.pages)
+            ? data.pages
+            : Array.isArray(data?.pages?.contents)
+              ? data.pages.contents
+              : [];
+          if (pagesArr.length > 0) {
+            const extractedUuids = [];
+            const parsedPages = pagesArr.map((p, idx) => {
+              const imgs = p.images || [];
+              const fallbackPageUrl =
+                initialHdPages[idx]?.ultraHdUrl ||
+                upgradeKaufdaPageImageUrl(retMeta.highResCoverUrl || retMeta.coverUrl, true);
+              const hdUrl = selectBestHighResBrochurePageUrl(imgs, fallbackPageUrl);
+              const uuidMatch = String(hdUrl || '').match(/content-media\.bonial\.biz\/([0-9a-f-]{36})\//i);
+              if (uuidMatch && uuidMatch[1]) extractedUuids.push(uuidMatch[1]);
+              const largeUrl = hdUrl.replace('impolicy=zoomlarge', 'impolicy=large');
+              const pageOffers = [];
+              (p.Validation || p.offers || p.contents || []).forEach((c) => {
+                if (c && (c.title || c.product?.name)) {
+                  pageOffers.push({
+                    title: c.title || c.product?.name || '',
+                    price: c.price || c.deals?.[0]?.min ? `${String(c.deals?.[0]?.min || c.price).replace('.', ',')} €` : ''
+                  });
+                }
+              });
+              return {
+                number: typeof p.number === 'number' ? p.number : idx,
+                largeUrl,
+                ultraHdUrl: hdUrl,
+                imageUrl: largeUrl,
+                fallbackLargeUrl: largeUrl,
+                offers: pageOffers
+              };
             });
-            return {
-              number: typeof p.number === 'number' ? p.number : idx,
-              largeUrl,
-              ultraHdUrl: hdUrl,
-              imageUrl: largeUrl,
-              fallbackLargeUrl: largeUrl,
-              offers: pageOffers
-            };
-          });
-          if (data.contentId && data.contentId !== contentId) {
-            retMeta.contentId = data.contentId;
-            retMeta.kaufdaUrl = `https://www.kaufda.de/contentViewer/static/${data.contentId}?page=1`;
-            retMeta.brochureUrl = retMeta.kaufdaUrl;
+            if (data.contentId) {
+              retMeta.contentId = data.contentId;
+              retMeta.kaufdaUrl = `https://www.kaufda.de/contentViewer/static/${data.contentId}?page=1`;
+              retMeta.brochureUrl = retMeta.kaufdaUrl;
+            }
+            if (extractedUuids.length === parsedPages.length) {
+              retMeta.pageUuids = extractedUuids;
+            }
+            if (parsedPages[0]?.largeUrl) {
+              retMeta.coverUrl = parsedPages[0].largeUrl;
+              retMeta.highResCoverUrl = parsedPages[0].ultraHdUrl;
+            }
+            if (data.validFrom) retMeta.validFrom = data.validFrom;
+            if (data.validUntil) retMeta.validUntil = data.validUntil;
+            retMeta.pages = `${parsedPages.length} Seiten`;
+            if (Array.isArray(state.brochures)) {
+              const bIdx = state.brochures.findIndex((x) => x.id === retMeta.id);
+              if (bIdx >= 0) state.brochures[bIdx] = { ...state.brochures[bIdx], ...retMeta };
+              else state.brochures.push({ ...retMeta });
+            }
+            saveOffersToCache();
+            if (state.activeBrochureReader && state.activeBrochureReader.retailerId === retMeta.id) {
+              state.activeBrochureReader.contentId = retMeta.contentId;
+              state.activeBrochureReader.pages = parsedPages;
+              state.activeBrochureReader.loading = false;
+              state.activeBrochureReader.directUrl = getDirectKaufdaBrochureViewerUrl(
+                retMeta,
+                state.activeBrochureReader.pageIndex + 1
+              );
+              renderBrochureReaderModalContent();
+            }
+            return;
           }
-          if (data.validFrom) retMeta.validFrom = data.validFrom;
-          if (data.validUntil) retMeta.validUntil = data.validUntil;
-          retMeta.pages = `${parsedPages.length} Seiten`;
-          state.activeBrochureReader.pages = parsedPages;
-          state.activeBrochureReader.loading = false;
-          state.activeBrochureReader.directUrl = getDirectKaufdaBrochureViewerUrl(
-            retMeta,
-            state.activeBrochureReader.pageIndex + 1
-          );
-          renderBrochureReaderModalContent();
-          return;
         }
-      }
       }
     } catch (_) {}
   }
+
+  // Browser-Direkt-Fallback (u.a. für V-Markt, dm, Rossmann oder wenn Edge Function noch nicht aktualisiert wurde)
+  try {
+    const updatedViaBrowser = await fetchLiveBrochureForRetailer(retMeta);
+    if (updatedViaBrowser && state.activeBrochureReader && state.activeBrochureReader.retailerId === retMeta.id) {
+      const rebuilt = buildVerifiedHighResPagesForRetailer(retMeta);
+      if (rebuilt.length > 0) {
+        state.activeBrochureReader.contentId = retMeta.contentId;
+        state.activeBrochureReader.pages = rebuilt;
+        state.activeBrochureReader.directUrl = getDirectKaufdaBrochureViewerUrl(
+          retMeta,
+          state.activeBrochureReader.pageIndex + 1
+        );
+      }
+    }
+  } catch (_) {}
 
   if (state.activeBrochureReader) {
     state.activeBrochureReader.loading = false;
@@ -9205,23 +9956,29 @@ function renderBrochureReaderModalContent() {
   const pageExternalUrl = getDirectKaufdaBrochureViewerUrl(reader.retailerMeta, (reader.pageIndex || 0) + 1);
   if (extLinkEl) extLinkEl.href = pageExternalUrl;
 
-  // Für neu hinzugefügte Händler (z.B. V-Markt, dm, Rossmann), für die noch keine lokalen HD-Seiten geladen wurden:
-  // Niemals ein fremdes Prospekt zeigen, sondern direkt den echten KaufDA-Link für genau diesen Händler anbieten!
-  if (!reader.loading && (!pages || pages.length === 0) && !reader.contentId) {
-    const kaufdaDirect =
-      reader.retailerMeta.kaufdaUrl ||
-      reader.retailerMeta.brochureUrl ||
-      `https://www.kaufda.de/Geschaefte/${encodeURIComponent(reader.retailerMeta.kaufdaSlug || reader.retailerMeta.id)}`;
+  if (!reader.loading && (!pages || pages.length === 0)) {
+    const kaufdaDirect = getDirectKaufdaBrochureViewerUrl(reader.retailerMeta, 1);
     bodyEl.innerHTML = `
       <div class="section-card" style="width:100%; text-align:center; padding:18px 14px; border-color:rgba(16,185,129,0.4);">
         <div style="font-size:28px; margin-bottom:6px;">📰</div>
-        <div style="font-size:16px; font-weight:800; margin-bottom:6px;">${escapeHtml(reader.retailerMeta.label)} Prospekt</div>
+        <div style="font-size:16px; font-weight:800; margin-bottom:6px;">${escapeHtml(reader.retailerMeta.label)} Prospekt (KW ${getIsoCalendarWeek()})</div>
         <div style="font-size:12.5px; color:var(--text-muted); line-height:1.5; margin-bottom:14px;">
-          Für <strong>${escapeHtml(reader.retailerMeta.label)}</strong> liegen aktuell keine vorab gespeicherten Einzelseiten in der App vor. Du kannst das aktuelle Prospekt direkt bei KaufDA für <strong>86399 Bobingen</strong> öffnen:
+          Aktualisiere einmalig die Supabase Edge Function <code>kaufda-brochure</code>, um alle Einzelseiten von <strong>${escapeHtml(reader.retailerMeta.label)}</strong> automatisch jede Kalenderwoche live in der App durchzublättern – oder öffne das aktuelle Prospekt direkt bei KaufDA:
         </div>
         <a href="${escapeHtml(kaufdaDirect)}" target="_blank" rel="noopener" class="btn btn-primary" style="text-decoration:none;">
-          📖 ${escapeHtml(reader.retailerMeta.label)} Prospekt bei KaufDA öffnen ↗
+          📖 ${escapeHtml(reader.retailerMeta.label)} Prospekt (KW ${getIsoCalendarWeek()}) bei KaufDA öffnen ↗
         </a>
+      </div>
+    `;
+    return;
+  }
+
+  if (reader.loading && (!pages || pages.length === 0)) {
+    bodyEl.innerHTML = `
+      <div class="section-card" style="width:100%; text-align:center; padding:26px 14px;">
+        <div style="font-size:26px; margin-bottom:8px;">⏳</div>
+        <div style="font-weight:800; font-size:14px;">Lade aktuelles ${escapeHtml(reader.retailerMeta.label)} Prospekt (KW ${getIsoCalendarWeek()})...</div>
+        <div style="font-size:11.5px; color:var(--text-muted); margin-top:4px;">Prüfe aktuelle Kalenderwoche für ${escapeHtml(state.userLocation?.zip || '86399')} ${escapeHtml(state.userLocation?.city || 'Bobingen')}</div>
       </div>
     `;
     return;
@@ -9270,6 +10027,34 @@ function renderBrochureReaderModalContent() {
     (o) => normalizeRetailerId(o.retailer) === reader.retailerId
   );
 
+  const pinPageKey = `${reader.retailerId}::${idx + 1}`;
+  const pagePins = Array.isArray(state.brochurePins?.[pinPageKey]) ? state.brochurePins[pinPageKey] : [];
+  const pendingTap = reader.pendingTap && reader.pendingTap.pageIndex === idx ? reader.pendingTap : null;
+
+  const pinsOverlayHtml = pagePins
+    .map(
+      (pin, pNum) => `
+      <button
+        type="button"
+        class="brochure-pin-marker"
+        style="left:${Number(pin.xPct) || 50}%; top:${Number(pin.yPct) || 50}%;"
+        onclick="event.stopPropagation(); inspectBrochurePin('${escapeHtml(pinPageKey)}', '${escapeHtml(pin.id)}')"
+        title="📌 ${escapeHtml(pin.title)}${pin.price ? ' (' + escapeHtml(pin.price) + ')' : ''}"
+      >
+        ${pNum + 1}
+      </button>`
+    )
+    .join('');
+
+  const pendingMarkerHtml = pendingTap
+    ? `<div class="brochure-pin-marker" style="left:${pendingTap.xPct}%; top:${pendingTap.yPct}%; background:#10b981; pointer-events:none;">＋</div>`
+    : '';
+
+  const pageOfferQuickChips = [
+    ...(currentPage.offers || []).slice(0, 8),
+    ...retailerOffers.slice(0, 6).map((o) => ({ title: o.title, price: o.price }))
+  ].slice(0, 8);
+
   bodyEl.innerHTML = `
     <div class="brochure-reader-toolbar">
       <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
@@ -9286,13 +10071,13 @@ function renderBrochureReaderModalContent() {
       </div>
       <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
         <button type="button" class="pill-btn ${zoomLevel === 0 ? 'active' : ''}" style="font-size:10.5px; padding:4px 8px; ${zoomLevel === 0 ? 'background:var(--primary); color:#fff; border-color:var(--primary);' : ''}" onclick="setBrochureReaderZoomLevel(0)">
-          📐 100% Passend
+          📐 100%
         </button>
         <button type="button" class="pill-btn ${zoomLevel === 1 ? 'active' : ''}" style="font-size:10.5px; padding:4px 8px; ${zoomLevel === 1 ? 'background:var(--primary); color:#fff; border-color:var(--primary);' : ''}" onclick="setBrochureReaderZoomLevel(1)">
-          🔍 130% Lesen
+          🔍 130%
         </button>
         <button type="button" class="pill-btn ${zoomLevel === 2 ? 'active' : ''}" style="font-size:10.5px; padding:4px 8px; ${zoomLevel === 2 ? 'background:var(--primary); color:#fff; border-color:var(--primary);' : ''}" onclick="setBrochureReaderZoomLevel(2)">
-          🔎 165% Detail
+          🔎 165%
         </button>
         <a
           href="${escapeHtml(pageExternalUrl)}"
@@ -9307,24 +10092,86 @@ function renderBrochureReaderModalContent() {
       </div>
     </div>
 
+    <div style="font-size:11px; color:#6ee7b7; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); border-radius:9px; padding:5px 9px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; gap:6px;">
+      <span>📌 <strong>Neu:</strong> Tippe direkt auf einen Artikel im Prospekt, um ihn zu markieren &amp; einzukaufen!</span>
+      ${pagePins.length > 0 ? `<span style="font-weight:800; white-space:nowrap;">${pagePins.length} Pin${pagePins.length > 1 ? 's' : ''}</span>` : ''}
+    </div>
+
     <div
       class="brochure-reader-page-box ${isZoomed ? 'zoomed' : ''}"
       ondblclick="toggleBrochureReaderZoom()"
       ontouchstart="onBrochureTouchStart(event)"
       ontouchend="onBrochureTouchEnd(event)"
-      title="Wischen oder Pfeile zum Blättern · Doppelklick oder Lupe oben zum Zoomen"
+      title="Auf Artikel tippen zum Markieren · Wischen zum Blättern"
     >
       <button type="button" class="brochure-side-nav prev" onclick="event.stopPropagation(); stepBrochureReaderPage(-1)" ${idx <= 0 ? 'disabled' : ''} aria-label="Vorherige Seite">‹</button>
-      <img
-        id="brochureReaderActiveImg"
-        src="${escapeHtml(activeImgSrc)}"
-        alt="${escapeHtml(reader.retailerMeta.label)} Prospekt Seite ${idx + 1}"
-        style="${zoomImgStyle}"
-        decoding="async"
-        onerror="if(this.dataset.fallbackTried!=='1'){this.dataset.fallbackTried='1';this.src='${escapeHtml(currentPage.ultraHdUrl || currentPage.fallbackLargeUrl || reader.retailerMeta.highResCoverUrl || reader.retailerMeta.coverUrl)}';}"
-      />
+      <div id="brochureTapStage" style="position:relative; display:inline-block; margin:auto; max-width:${isZoomed ? 'none' : '100%'}; max-height:${isZoomed ? 'none' : '100%'};" onclick="onBrochurePageTap(event)">
+        <img
+          id="brochureReaderActiveImg"
+          src="${escapeHtml(activeImgSrc)}"
+          alt="${escapeHtml(reader.retailerMeta.label)} Prospekt Seite ${idx + 1}"
+          style="${zoomImgStyle}; cursor:crosshair;"
+          decoding="async"
+          onerror="if(this.dataset.fallbackTried!=='1'){this.dataset.fallbackTried='1';this.src='${escapeHtml(currentPage.ultraHdUrl || currentPage.fallbackLargeUrl || reader.retailerMeta.highResCoverUrl || reader.retailerMeta.coverUrl)}';}"
+        />
+        ${pinsOverlayHtml}
+        ${pendingMarkerHtml}
+      </div>
       <button type="button" class="brochure-side-nav next" onclick="event.stopPropagation(); stepBrochureReaderPage(1)" ${idx >= total - 1 ? 'disabled' : ''} aria-label="Nächste Seite">›</button>
     </div>
+
+    <div id="brochurePinActionPanel" style="${pendingTap ? 'display:block;' : 'display:none;'} margin:8px 0;">
+      ${
+        pendingTap
+          ? `<div class="section-card" style="margin-bottom:0; padding:10px 12px; border-color:rgba(16,185,129,0.55); background:#0b1120;">
+               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                 <span style="font-size:12px; font-weight:800; color:#6ee7b7;">📌 Artikel auf Seite ${idx + 1} markieren &amp; in Einkaufsliste legen</span>
+                 <button type="button" class="pill-btn" style="font-size:10px; padding:2px 7px;" onclick="cancelBrochurePendingTap()">✕</button>
+               </div>
+               <div id="brochureTapAiHint" style="font-size:11px; color:#93c5fd; margin-bottom:6px;">${escapeHtml(pendingTap.statusHint || 'Gib kurz den Artikelnamen ein oder wähle unten einen erkannten Deal:')}</div>
+               <div style="display:flex; gap:6px; margin-bottom:7px;">
+                 <input id="brochurePinTitleInput" type="text" class="text-input" placeholder="Artikel (z.B. Butter, Kaffee, Lachs)..." value="${escapeHtml(pendingTap.suggestedTitle || '')}" style="flex:2; padding:8px 10px; font-size:13px;" onkeydown="if(event.key==='Enter')saveBrochurePinAndAddToCart()" />
+                 <input id="brochurePinPriceInput" type="text" class="text-input" placeholder="Preis (opt.)" value="${escapeHtml(pendingTap.suggestedPrice || '')}" style="flex:1; padding:8px 9px; font-size:13px;" onkeydown="if(event.key==='Enter')saveBrochurePinAndAddToCart()" />
+               </div>
+               ${
+                 pageOfferQuickChips.length > 0
+                   ? `<div style="display:flex; gap:5px; overflow-x:auto; padding-bottom:6px; margin-bottom:6px;">
+                        ${pageOfferQuickChips
+                          .map(
+                            (po) =>
+                              `<button type="button" class="chip" style="font-size:10.5px; padding:3px 8px; white-space:nowrap;" onclick="fillBrochurePinFromChip(${JSON.stringify(po.title || '').replace(/"/g, '&quot;')}, ${JSON.stringify(po.price || '').replace(/"/g, '&quot;')})">${escapeHtml(po.title)}${po.price ? ' · ' + escapeHtml(po.price) : ''}</button>`
+                          )
+                          .join('')}
+                      </div>`
+                   : ''
+               }
+               <button type="button" class="btn btn-primary" style="padding:9px; font-size:12.5px;" onclick="saveBrochurePinAndAddToCart()">
+                 🛒 Artikel markieren &amp; zur Einkaufsliste hinzufügen
+               </button>
+             </div>`
+          : ''
+      }
+    </div>
+
+    ${
+      pagePins.length > 0
+        ? `<div class="section-card" style="margin-bottom:8px; padding:8px 10px; background:rgba(239,68,68,0.08); border-color:rgba(239,68,68,0.35);">
+             <div style="font-size:11px; font-weight:800; color:#fca5a5; margin-bottom:5px;">📌 Deine Markierungen auf Seite ${idx + 1}:</div>
+             <div style="display:flex; flex-wrap:wrap; gap:6px;">
+               ${pagePins
+                 .map(
+                   (pin, pIdx) => `
+                 <span style="display:inline-flex; align-items:center; gap:5px; background:#0b1120; border:1px solid var(--border); border-radius:999px; padding:3px 8px; font-size:11px;">
+                   <strong style="color:#f87171;">#${pIdx + 1}</strong> ${escapeHtml(pin.title)}${pin.price ? ` (${escapeHtml(pin.price)})` : ''}
+                   <button type="button" style="background:none; border:none; color:#34d399; cursor:pointer; font-size:11px; padding:0 2px;" onclick="reAddBrochurePinToCart('${escapeHtml(pinPageKey)}', '${escapeHtml(pin.id)}')" title="Erneut in Einkaufsliste">🛒</button>
+                   <button type="button" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:11px; padding:0 2px;" onclick="removeBrochurePin('${escapeHtml(pinPageKey)}', '${escapeHtml(pin.id)}')" title="Markierung entfernen">✕</button>
+                 </span>`
+                 )
+                 .join('')}
+             </div>
+           </div>`
+        : ''
+    }
 
     <div class="brochure-page-thumb-strip">
       ${pages
@@ -9415,8 +10262,259 @@ function toggleBrochureReaderZoom() {
 }
 
 function closeBrochureReaderModal() {
+  if (state.activeBrochureReader) {
+    state.activeBrochureReader.pendingTap = null;
+  }
   const modal = document.getElementById('brochureReaderModal');
   if (modal) modal.classList.remove('open');
+}
+
+function saveBrochurePinsToStorage() {
+  try {
+    localStorage.setItem('kt_brochure_pins_v45', JSON.stringify(state.brochurePins || {}));
+  } catch (_) {}
+}
+
+async function onBrochurePageTap(event) {
+  const reader = state.activeBrochureReader;
+  if (!reader) return;
+  const imgEl = document.getElementById('brochureReaderActiveImg');
+  if (!imgEl) return;
+  const rect = imgEl.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+
+  const clientX = event.clientX ?? (event.changedTouches && event.changedTouches[0]?.clientX) ?? rect.left + rect.width / 2;
+  const clientY = event.clientY ?? (event.changedTouches && event.changedTouches[0]?.clientY) ?? rect.top + rect.height / 2;
+  const xPct = Math.round(Math.max(4, Math.min(96, ((clientX - rect.left) / rect.width) * 100)) * 10) / 10;
+  const yPct = Math.round(Math.max(4, Math.min(96, ((clientY - rect.top) / rect.height) * 100)) * 10) / 10;
+
+  const hasAiKey = Boolean(state.household?.geminiKey && state.household.geminiKey.trim().length > 10);
+  reader.pendingTap = {
+    pageIndex: reader.pageIndex || 0,
+    xPct,
+    yPct,
+    suggestedTitle: '',
+    suggestedPrice: '',
+    statusHint: hasAiKey
+      ? '✨ KI liest angetippten Prospekt-Artikel aus (oder direkt unten eintippen)...'
+      : 'Tippe kurz den Artikelnamen ein oder wähle einen Schnell-Chip:'
+  };
+  renderBrochureReaderModalContent();
+
+  setTimeout(() => {
+    const panel = document.getElementById('brochurePinActionPanel');
+    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const inp = document.getElementById('brochurePinTitleInput');
+    if (inp && !hasAiKey) inp.focus();
+  }, 40);
+
+  if (hasAiKey) {
+    detectTappedBrochureItemWithAI(imgEl.src, xPct, yPct, reader.pageIndex || 0).catch(() => {});
+  }
+}
+
+async function detectTappedBrochureItemWithAI(imgUrl, xPct, yPct, expectedPageIndex) {
+  const key = (state.household?.geminiKey || '').trim();
+  if (!key || !imgUrl) return;
+  try {
+    const resp = await fetch(imgUrl, { mode: 'cors' });
+    if (!resp.ok) throw new Error('CORS');
+    const blob = await resp.blob();
+    const bitmapUrl = URL.createObjectURL(blob);
+    const cropDataUrl = await new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => {
+        try {
+          const nw = im.naturalWidth || 1000;
+          const nh = im.naturalHeight || 1400;
+          const cropW = Math.round(nw * 0.38);
+          const cropH = Math.round(nh * 0.30);
+          const sx = Math.max(0, Math.min(nw - cropW, Math.round((xPct / 100) * nw - cropW / 2)));
+          const sy = Math.max(0, Math.min(nh - cropH, Math.round((yPct / 100) * nh - cropH / 2)));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.min(640, cropW);
+          canvas.height = Math.round((canvas.width / cropW) * cropH);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(im, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(bitmapUrl);
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        } catch (e) {
+          URL.revokeObjectURL(bitmapUrl);
+          reject(e);
+        }
+      };
+      im.onerror = (err) => {
+        URL.revokeObjectURL(bitmapUrl);
+        reject(err);
+      };
+      im.src = bitmapUrl;
+    });
+
+    const provider = detectAiProviderFromKey(key);
+    let rawOut = '';
+    const prompt = 'Lies den Haupt-Artikel in der Mitte dieses Supermarkt-Prospekt-Ausschnitts auf Deutsch aus. Antworte NUR als JSON: {"title": "Marke + Produktname", "price": "1,49 €"}';
+
+    if (provider === 'gemini') {
+      const gemRes = await callGeminiWithFallback(key, {
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              { inlineData: { mimeType: 'image/jpeg', data: cropDataUrl.split(',')[1] } }
+            ]
+          }
+        ],
+        generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+      });
+      if (gemRes.ok) rawOut = gemRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } else if (provider === 'groq') {
+      const resolved = await resolveActiveGroqModels(key);
+      if (resolved.visionModel) {
+        const gRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            model: resolved.visionModel,
+            temperature: 0.1,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: prompt },
+                  { type: 'image_url', image_url: { url: cropDataUrl } }
+                ]
+              }
+            ]
+          })
+        });
+        const gJson = await gRes.json().catch(() => ({}));
+        if (gRes.ok) rawOut = gJson?.choices?.[0]?.message?.content || '';
+      }
+    }
+
+    const match = String(rawOut || '').match(/\{[\s\S]*\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (state.activeBrochureReader?.pendingTap && state.activeBrochureReader.pendingTap.pageIndex === expectedPageIndex) {
+        const titleInp = document.getElementById('brochurePinTitleInput');
+        const priceInp = document.getElementById('brochurePinPriceInput');
+        const hintEl = document.getElementById('brochureTapAiHint');
+        if (parsed.title && titleInp && !titleInp.value.trim()) {
+          titleInp.value = String(parsed.title).trim();
+          state.activeBrochureReader.pendingTap.suggestedTitle = String(parsed.title).trim();
+        }
+        if (parsed.price && priceInp && !priceInp.value.trim()) {
+          priceInp.value = String(parsed.price).trim();
+          state.activeBrochureReader.pendingTap.suggestedPrice = String(parsed.price).trim();
+        }
+        if (hintEl && parsed.title) {
+          hintEl.textContent = `✨ Erkannt: ${parsed.title}${parsed.price ? ' (' + parsed.price + ')' : ''} – jetzt unten bestätigen!`;
+        }
+      }
+    }
+  } catch (_) {
+    const hintEl = document.getElementById('brochureTapAiHint');
+    if (hintEl) hintEl.textContent = '📌 Bitte Artikelnamen kurz prüfen/eingeben & hinzufügen:';
+  }
+}
+
+function fillBrochurePinFromChip(title, price) {
+  const tInp = document.getElementById('brochurePinTitleInput');
+  const pInp = document.getElementById('brochurePinPriceInput');
+  if (tInp) tInp.value = title || '';
+  if (pInp) pInp.value = price || '';
+}
+
+function cancelBrochurePendingTap() {
+  if (!state.activeBrochureReader) return;
+  state.activeBrochureReader.pendingTap = null;
+  renderBrochureReaderModalContent();
+}
+
+async function saveBrochurePinAndAddToCart() {
+  const reader = state.activeBrochureReader;
+  if (!reader || !reader.pendingTap) return;
+  const titleVal = (document.getElementById('brochurePinTitleInput')?.value || '').trim();
+  const priceVal = (document.getElementById('brochurePinPriceInput')?.value || '').trim();
+  if (!titleVal) {
+    showToast('Bitte kurz den Artikelnamen eingeben (z.B. Butter oder Kaffee)');
+    document.getElementById('brochurePinTitleInput')?.focus();
+    return;
+  }
+
+  const pageNum = (reader.pageIndex || 0) + 1;
+  const pinPageKey = `${reader.retailerId}::${pageNum}`;
+  if (!state.brochurePins || typeof state.brochurePins !== 'object') {
+    state.brochurePins = {};
+  }
+  if (!Array.isArray(state.brochurePins[pinPageKey])) {
+    state.brochurePins[pinPageKey] = [];
+  }
+
+  const pinObj = {
+    id: 'pin-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5),
+    title: titleVal,
+    price: priceVal,
+    xPct: reader.pendingTap.xPct,
+    yPct: reader.pendingTap.yPct,
+    retailer: reader.retailerMeta?.label || reader.retailerId,
+    page: pageNum,
+    createdAt: Date.now()
+  };
+  state.brochurePins[pinPageKey].push(pinObj);
+  saveBrochurePinsToStorage();
+
+  const itemName = `${titleVal} (${reader.retailerMeta?.label || reader.retailerId})`;
+  const specStr = priceVal ? `Prospekt S.${pageNum}: ${priceVal}` : `Prospekt S.${pageNum}`;
+  state.shoppingList.unshift({
+    id: 'sh-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    name: itemName,
+    spec: specStr,
+    recipeTitle: `📌 ${reader.retailerMeta?.label || reader.retailerId} Prospekt`,
+    checked: false,
+    updatedAt: Date.now()
+  });
+
+  reader.pendingTap = null;
+  await saveShoppingList();
+  renderShoppingList();
+  renderOffersTab();
+  renderBrochureReaderModalContent();
+  showToast(`📌 "${titleVal}" im Prospekt markiert & zur Einkaufsliste hinzugefügt!`);
+}
+
+function removeBrochurePin(pinPageKey, pinId) {
+  if (!state.brochurePins || !Array.isArray(state.brochurePins[pinPageKey])) return;
+  state.brochurePins[pinPageKey] = state.brochurePins[pinPageKey].filter((p) => p.id !== pinId);
+  if (state.brochurePins[pinPageKey].length === 0) {
+    delete state.brochurePins[pinPageKey];
+  }
+  saveBrochurePinsToStorage();
+  renderBrochureReaderModalContent();
+  showToast('Markierung entfernt');
+}
+
+async function reAddBrochurePinToCart(pinPageKey, pinId) {
+  const pin = (state.brochurePins?.[pinPageKey] || []).find((p) => p.id === pinId);
+  if (!pin) return;
+  state.shoppingList.unshift({
+    id: 'sh-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+    name: `${pin.title} (${pin.retailer})`,
+    spec: pin.price ? `Prospekt S.${pin.page}: ${pin.price}` : `Prospekt S.${pin.page}`,
+    recipeTitle: `📌 ${pin.retailer} Prospekt`,
+    checked: false,
+    updatedAt: Date.now()
+  });
+  await saveShoppingList();
+  renderShoppingList();
+  renderOffersTab();
+  showToast(`🛒 "${pin.title}" auf Einkaufsliste gesetzt!`);
+}
+
+function inspectBrochurePin(pinPageKey, pinId) {
+  const pin = (state.brochurePins?.[pinPageKey] || []).find((p) => p.id === pinId);
+  if (!pin) return;
+  showToast(`📌 Markiert: ${pin.title}${pin.price ? ' (' + pin.price + ')' : ''}`);
 }
 
 // Vollbild-Lightbox für Angebots-Artikelbilder & KaufDA-Prospektseiten
@@ -9541,31 +10639,37 @@ function toggleLightboxZoom() {
 }
 
 function initSupermarketOffersState() {
-  state.brochures = ALL_RETAILERS_META.map((r) => ({ ...r }));
+  const allBase = typeof getAllAvailableRetailersMeta === 'function' ? getAllAvailableRetailersMeta() : ALL_RETAILERS_META;
+  state.brochures = allBase.map((r) => ({ ...r }));
   try {
-    const cachedBrochures = localStorage.getItem('kt_cached_brochures_v17');
+    const cachedBrochures = localStorage.getItem('kt_cached_brochures_v45') || localStorage.getItem('kt_cached_brochures_v17');
     if (cachedBrochures) {
       const parsedB = JSON.parse(cachedBrochures);
-      if (Array.isArray(parsedB) && parsedB.length === ALL_RETAILERS_META.length) {
-        state.brochures = ALL_RETAILERS_META.map((base) => {
+      if (Array.isArray(parsedB) && parsedB.length > 0) {
+        state.brochures = allBase.map((base) => {
           const found = parsedB.find((p) => p.id === base.id) || {};
-          // Stelle sicher, dass ALDI Süd niemals eine alte falsche REWE-contentId nutzt
+          // Ignoriere gecachte Prospekte, deren Gültigkeit bereits abgelaufen ist (damit nur aktuelle KW gezeigt wird!)
+          if (found.validUntil && isBrochureDateExpired(found.validUntil)) {
+            return { ...base };
+          }
           const validCachedCid =
             found.contentId &&
             found.contentId !== '25b020c6-6e0a-48ab-858f-5d942fe20981' &&
             found.contentId !== 'cbb6d32e-7f56-4827-8e8c-f9bebb1016b1'
               ? found.contentId
               : base.contentId;
-          const cid = validCachedCid || base.contentId;
-          const directViewer = `https://www.kaufda.de/contentViewer/static/${cid}?page=1`;
+          const cid = validCachedCid || '';
+          const directViewer = cid
+            ? `https://www.kaufda.de/contentViewer/static/${cid}?page=1`
+            : (base.cityUrl || base.kaufdaUrl || `https://www.kaufda.de/Geschaefte/${encodeURIComponent(base.kaufdaSlug || base.id)}`);
           return {
             ...base,
             ...found,
             coverUrl: upgradeKaufdaPageImageUrl(found.coverUrl || base.coverUrl, false),
             highResCoverUrl: upgradeKaufdaPageImageUrl(found.highResCoverUrl || base.highResCoverUrl || base.coverUrl, true),
             contentId: cid,
-            validFrom: found.validFrom || base.validFrom,
-            validUntil: found.validUntil || base.validUntil,
+            validFrom: found.validFrom || base.validFrom || '',
+            validUntil: found.validUntil || base.validUntil || '',
             pageUuids: Array.isArray(found.pageUuids) && found.pageUuids.length > 0 ? found.pageUuids : base.pageUuids,
             kaufdaUrl: directViewer,
             brochureUrl: directViewer
@@ -9575,12 +10679,45 @@ function initSupermarketOffersState() {
     }
   } catch (_) {}
 
+  const vMarktStarterOffers = [
+    {
+      id: 'off-vm-1',
+      retailer: 'V-Markt',
+      brand: 'V-Markt Metzgerei / Georg Jos. Kaes',
+      title: 'Frisches Bayerisches Rinder- & Schweinehackfleisch',
+      price: '0,89 €',
+      oldPrice: '1,29 €',
+      discount: '-31%',
+      unitInfo: 'je 100 g · V-Markt Wochenaktion',
+      validUntil: 'Aktuelle Woche',
+      keywords: ['hackfleisch', 'rinderhackfleisch', 'gemischtes hackfleisch'],
+      imageUrl: 'https://content-media.bonial.biz/66735d13-3342-4e57-9210-4a8860a33205/621a7b11-e5ef-4c97-945a-3945c4944a12.jpg?impolicy=SEO-OFFER',
+      brochureUrl: 'https://www.kaufda.de/Augsburg/V-Markt'
+    },
+    {
+      id: 'off-vm-2',
+      retailer: 'V-Markt',
+      brand: 'Allgäuer Sennerei / V-Markt',
+      title: 'Allgäuer Emmentaler / Bergkäse gerieben oder am Stück',
+      price: '1,49 €',
+      oldPrice: '2,19 €',
+      discount: '-32%',
+      unitInfo: 'je 100 g / Packung · V-Markt Prospekt',
+      validUntil: 'Aktuelle Woche',
+      keywords: ['käse', 'emmentaler', 'bergkäse', 'geriebener käse', 'parmesan'],
+      imageUrl: 'https://content-media.bonial.biz/fd1441e3-f6ce-47b1-bd8d-13f7dbc93fce/7021efe7-81f3-4e67-b775-fe2f3d5c6d03.jpg?impolicy=SEO-OFFER',
+      brochureUrl: 'https://www.kaufda.de/Augsburg/V-Markt'
+    }
+  ];
+
   try {
-    const cached = localStorage.getItem('kt_cached_offers_v17');
+    const cached = localStorage.getItem('kt_cached_offers_v45') || localStorage.getItem('kt_cached_offers_v17');
     if (cached) {
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        state.offers = parsed.map((o) => ({
+        const hasVMarkt = parsed.some((o) => normalizeRetailerId(o.retailer) === 'V-Markt');
+        const combined = hasVMarkt ? parsed : [...vMarktStarterOffers, ...parsed];
+        state.offers = combined.map((o) => ({
           ...o,
           brochureUrl: getDirectKaufdaBrochureViewerUrl(o, 1)
         }));
@@ -9588,7 +10725,7 @@ function initSupermarketOffersState() {
       }
     }
   } catch (_) {}
-  state.offers = INITIAL_VERIFIED_OFFERS.map((o) => ({
+  state.offers = [...INITIAL_VERIFIED_OFFERS, ...vMarktStarterOffers].map((o) => ({
     ...o,
     brochureUrl: getDirectKaufdaBrochureViewerUrl(o, 1)
   }));
@@ -9596,9 +10733,9 @@ function initSupermarketOffersState() {
 
 function saveOffersToCache() {
   try {
-    localStorage.setItem('kt_cached_offers_v17', JSON.stringify((state.offers || []).slice(0, 95)));
+    localStorage.setItem('kt_cached_offers_v45', JSON.stringify((state.offers || []).slice(0, 110)));
     if (state.brochures) {
-      localStorage.setItem('kt_cached_brochures_v17', JSON.stringify(state.brochures));
+      localStorage.setItem('kt_cached_brochures_v45', JSON.stringify(state.brochures));
     }
   } catch (_) {}
 }
@@ -9610,7 +10747,9 @@ function getRetailerMetaByAnyName(name) {
   const allList = typeof getAllMergedBrochuresList === 'function' ? getAllMergedBrochuresList() : (state.brochures || ALL_RETAILERS_META);
   const exact = allList.find((r) => r.id.toLowerCase() === n || (r.label || '').toLowerCase() === n);
   if (exact) return exact;
+  if (n.includes('v-markt') || n.includes('v markt') || n.includes('georg jos')) return allList.find((r) => r.id === 'V-Markt');
   if (n.includes('rewe')) return allList.find((r) => r.id === 'REWE');
+  if (n.includes('marktkauf')) return allList.find((r) => r.id === 'Marktkauf') || allList.find((r) => r.id === 'EDEKA');
   if (n.includes('edeka')) return allList.find((r) => r.id === 'EDEKA');
   if (n.includes('lidl')) return allList.find((r) => r.id === 'Lidl');
   if (n.includes('aldi nord') || n.includes('aldi-nord')) return allList.find((r) => r.id === 'ALDI Nord');
@@ -9622,7 +10761,16 @@ function getRetailerMetaByAnyName(name) {
   if (n.includes('globus')) return allList.find((r) => r.id === 'Globus');
   if (n.includes('tegut')) return allList.find((r) => r.id === 'tegut');
   if (n.includes('hit')) return allList.find((r) => r.id === 'HIT');
+  if (n.includes('rossmann')) return allList.find((r) => r.id === 'Rossmann');
+  if (n === 'dm' || n.includes('dm-drogerie')) return allList.find((r) => r.id === 'dm');
   return allList.find((r) => n.includes(r.id.toLowerCase()) || r.id.toLowerCase().includes(n)) || null;
+}
+
+function isRetailerCurrentlyEnabled(retailerName) {
+  if (typeof getEnabledRetailerIds !== 'function') return true;
+  const enabledSet = getEnabledRetailerIds();
+  const normId = normalizeRetailerId(retailerName);
+  return enabledSet.has(normId);
 }
 
 function normalizeRetailerId(retailerName) {
@@ -9653,7 +10801,11 @@ function doesOfferMatchIngredientText(offer, ingName) {
 
 function findBestOfferForIngredientName(ingName) {
   if (!state.offers || state.offers.length === 0) return null;
-  return state.offers.find((off) => doesOfferMatchIngredientText(off, ingName)) || null;
+  return (
+    state.offers.find(
+      (off) => isRetailerCurrentlyEnabled(off.retailer) && doesOfferMatchIngredientText(off, ingName)
+    ) || null
+  );
 }
 
 function getOffersMatchingRecipe(recipe) {
@@ -9662,7 +10814,7 @@ function getOffersMatchingRecipe(recipe) {
   const seenIds = new Set();
   recipe.ingredients.forEach((ing) => {
     state.offers.forEach((off) => {
-      if (!seenIds.has(off.id) && doesOfferMatchIngredientText(off, ing.name)) {
+      if (!seenIds.has(off.id) && isRetailerCurrentlyEnabled(off.retailer) && doesOfferMatchIngredientText(off, ing.name)) {
         seenIds.add(off.id);
         matched.push(off);
       }
@@ -9942,7 +11094,8 @@ function renderOffersTab() {
   const badgeEl = document.getElementById('offersMatchBadge');
   if (!listEl) return;
 
-  const offers = state.offers || [];
+  // WICHTIG: Entfernte/deaktivierte Händler zeigen KEINERLEI Angebote an, bis sie wieder hinzugefügt werden!
+  const offers = (state.offers || []).filter((o) => isRetailerCurrentlyEnabled(o.retailer));
   const shoppingMatches = offers.filter((o) => getOfferMatchContext(o).isShoppingMatch);
   const recipeMatches = offers.filter((o) => getOfferMatchContext(o).isRecipeMatch);
 
@@ -10121,30 +11274,59 @@ function renderOffersTab() {
     }
   }
 
-  // Übersichtlich im 2-Spalten-Kachel-Raster gruppiert nach Händler
+  // Übersichtlich im 2-Spalten-Kachel-Raster, IMMER sauber nach Händler sortiert & gruppiert!
+  // Bei „Passend-Einkauf“ und „Passend-Rezepte“ stehen die Händler mit den meisten Treffern ganz oben.
+  const allMerged = typeof getAllMergedBrochuresList === 'function' ? getAllMergedBrochuresList() : (state.brochures || ALL_RETAILERS_META);
+  const enabledSetNow = typeof getEnabledRetailerIds === 'function' ? getEnabledRetailerIds() : null;
+  const activeRetailersMeta = allMerged.filter((r) => !enabledSetNow || enabledSetNow.has(r.id));
+
+  // Sammle auch evtl. eigene Händler aus filtered, die noch nicht in activeRetailersMeta stehen
+  filtered.forEach((o) => {
+    const normId = normalizeRetailerId(o.retailer);
+    if (!activeRetailersMeta.some((m) => m.id === normId) && isRetailerCurrentlyEnabled(normId)) {
+      activeRetailersMeta.push({
+        id: normId,
+        label: o.retailer,
+        badgeClass: 'REWE',
+        pages: 'Prospekt'
+      });
+    }
+  });
+
+  const groupedRetailers = activeRetailersMeta
+    .map((retMeta) => ({
+      retMeta,
+      items: filtered.filter((o) => normalizeRetailerId(o.retailer) === retMeta.id)
+    }))
+    .filter((g) => g.items.length > 0);
+
   if (state.selectedRetailer === 'Passend-Einkauf' || state.selectedRetailer === 'Passend-Rezepte') {
-    sectionsHtml += `
-      <div class="offers-grid-2col">
-        ${filtered.map((off) => renderSingleOfferCardHtml(off)).join('')}
-      </div>
-    `;
-    listEl.innerHTML = sectionsHtml;
-    return;
+    groupedRetailers.sort((a, b) => {
+      if (b.items.length !== a.items.length) return b.items.length - a.items.length;
+      return String(a.retMeta.label || a.retMeta.id).localeCompare(String(b.retMeta.label || b.retMeta.id), 'de');
+    });
   }
 
-  const retailersOrder = state.brochures || ALL_RETAILERS_META;
-  retailersOrder.forEach((retMeta) => {
-    const retailerOffers = filtered.filter((o) => normalizeRetailerId(o.retailer) === retMeta.id);
-    if (retailerOffers.length === 0) return;
+  groupedRetailers.forEach(({ retMeta, items: retailerOffers }) => {
     const kaufdaUrl = getDirectKaufdaBrochureViewerUrl(retMeta, 1);
     const vBadge = formatBrochureValidityBadge(retMeta);
+    let retSavings = 0;
+    retailerOffers.forEach((ro) => {
+      const sv = calculateOfferSavings(ro);
+      if (sv && sv.euroSaved > 0) retSavings += sv.euroSaved;
+    });
 
     sectionsHtml += `
       <div class="category-section">
         <div class="category-group-header">
           <div class="category-group-title" onclick="setOfferRetailerFilter('${escapeHtml(retMeta.id)}')" style="cursor:pointer;">
-            <span class="retailer-badge retailer-${escapeHtml(retMeta.badgeClass)}">${escapeHtml(retMeta.label)}</span>
+            <span class="retailer-badge retailer-${escapeHtml(retMeta.badgeClass || 'REWE')}">${escapeHtml(retMeta.label || retMeta.id)}</span>
             <span class="validity-pill ${vBadge.badgeClass}" style="font-size:10px;">${escapeHtml(vBadge.shortBadge)}</span>
+            ${
+              state.selectedRetailer === 'Passend-Einkauf' && retSavings > 0
+                ? `<span style="font-size:10.5px; color:#6ee7b7; font-weight:800;">💰 -${retSavings.toFixed(2).replace('.', ',')} €</span>`
+                : ''
+            }
           </div>
           <div class="category-header-right">
             <button
@@ -10153,7 +11335,7 @@ function renderOffersTab() {
               style="font-size:10px; padding:3px 8px; background:rgba(59,130,246,0.18); color:#93c5fd; border-color:rgba(59,130,246,0.4);"
               onclick="openInteractiveBrochureReader('${escapeHtml(retMeta.id)}', 1, event)"
             >
-              📖 Prospekt (${escapeHtml(retMeta.pages)})
+              📖 Prospekt${retMeta.pages ? ` (${escapeHtml(retMeta.pages)})` : ''}
             </button>
             <a
               href="${escapeHtml(kaufdaUrl)}"
@@ -10250,17 +11432,29 @@ async function fetchLiveBrochureForRetailer(b) {
   const loc = state.userLocation || DEFAULT_USER_LOCATION;
   const lat = b.id === 'ALDI Nord' ? '52.52' : (loc.lat || b.lat || '48.274');
   const lng = b.id === 'ALDI Nord' ? '13.41' : (loc.lng || b.lng || '10.835');
+  const kCity = loc.kaufdaCity || 'Augsburg';
+  const fallbackSlug = b.kaufdaSlug || String(b.label || b.id || '').replace(/[^a-zA-Z0-9äöüÄÖÜß]+/g, '-');
+  const cityUrl = b.cityUrl || (fallbackSlug ? `https://www.kaufda.de/${encodeURIComponent(kCity)}/${encodeURIComponent(fallbackSlug)}` : '');
+  const meinprospektUrl = b.meinprospektUrl || (b.slug ? `https://www.meinprospekt.de/${encodeURIComponent(b.slug)}` : '');
 
-  // 1. Primär: Supabase Edge Function (funktioniert 100 % dauerhaft auf Netlify Drag & Drop für ALLE Händler inkl. V-Markt, dm, Rossmann!)
+  const persistUpdatedBrochure = () => {
+    if (Array.isArray(state.brochures)) {
+      const idx = state.brochures.findIndex((x) => x.id === b.id);
+      if (idx >= 0) state.brochures[idx] = { ...state.brochures[idx], ...b };
+      else state.brochures.push({ ...b });
+    }
+  };
+
+  // 1. Primär: Supabase Edge Function kaufda-brochure (liefert immer die aktuelle KW inkl. aller Einzelseiten für REWE, V-Markt & Co.!)
   const endpoints = [];
   if (isSupabaseSyncConfigured()) {
     const sbBase = normalizeSupabaseBaseUrl(state.household.sbUrl);
     endpoints.push(
-      `${sbBase}/functions/v1/kaufda-brochure?retailer=${encodeURIComponent(b.label || b.id)}&retailerId=${encodeURIComponent(b.id)}&contentId=${encodeURIComponent(b.contentId || '')}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+      `${sbBase}/functions/v1/kaufda-brochure?retailer=${encodeURIComponent(b.label || b.id)}&retailerId=${encodeURIComponent(b.id)}&kaufdaSlug=${encodeURIComponent(fallbackSlug)}&slug=${encodeURIComponent(b.slug || '')}&cityUrl=${encodeURIComponent(cityUrl)}&meinprospektUrl=${encodeURIComponent(meinprospektUrl)}&contentId=${encodeURIComponent(b.contentId || '')}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
     );
   }
   endpoints.push(
-    `/api/kaufda-brochure?retailerId=${encodeURIComponent(b.id)}&contentId=${encodeURIComponent(b.contentId || '')}&cityUrl=${encodeURIComponent(b.cityUrl || '')}&meinprospektUrl=${encodeURIComponent(b.meinprospektUrl || '')}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
+    `/api/kaufda-brochure?retailerId=${encodeURIComponent(b.id)}&contentId=${encodeURIComponent(b.contentId || '')}&cityUrl=${encodeURIComponent(cityUrl)}&meinprospektUrl=${encodeURIComponent(meinprospektUrl)}&lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`
   );
 
   for (const ep of endpoints) {
@@ -10269,7 +11463,7 @@ async function fetchLiveBrochureForRetailer(b) {
       if (res.ok) {
         const data = await res.json();
         const pubCheck = `${data?.publisherName || ''} ${data?.title || ''}`;
-        if (data && data.contentId && doesBrochureMatchRetailer(b.id, pubCheck)) {
+        if (data && data.contentId && doesBrochureMatchRetailer(b.id, pubCheck) && !isBrochureDateExpired(data.validUntil)) {
           b.contentId = data.contentId;
           const directViewer = `https://www.kaufda.de/contentViewer/static/${data.contentId}?page=1`;
           b.kaufdaUrl = directViewer;
@@ -10284,50 +11478,69 @@ async function fetchLiveBrochureForRetailer(b) {
               : [];
           if (pagesArr.length > 0) {
             b.pages = `${pagesArr.length} Seiten`;
-            const imgs = pagesArr[0].images || [];
-            const cov = selectBestHighResBrochurePageUrl(imgs, b.highResCoverUrl || b.coverUrl);
-            if (cov) {
-              b.coverUrl = upgradeKaufdaPageImageUrl(cov, false);
-              b.highResCoverUrl = upgradeKaufdaPageImageUrl(cov, true);
+            const extractedUuids = [];
+            pagesArr.forEach((pg, pgIdx) => {
+              const u = selectBestHighResBrochurePageUrl(pg.images || [], '');
+              const m = String(u || '').match(/content-media\.bonial\.biz\/([0-9a-f-]{36})\//i);
+              if (m && m[1]) extractedUuids.push(m[1]);
+              if (pgIdx === 0 && u) {
+                b.coverUrl = upgradeKaufdaPageImageUrl(u, false);
+                b.highResCoverUrl = upgradeKaufdaPageImageUrl(u, true);
+              }
+            });
+            if (extractedUuids.length === pagesArr.length) {
+              b.pageUuids = extractedUuids;
             }
           }
-          // Speichere aktualisierte Prospekt-Daten auch im state.brochures Array
-          if (Array.isArray(state.brochures)) {
-            const idx = state.brochures.findIndex((x) => x.id === b.id);
-            if (idx >= 0) state.brochures[idx] = { ...state.brochures[idx], ...b };
-            else state.brochures.push({ ...b });
-          }
+          persistUpdatedBrochure();
           return true;
         }
       }
     } catch (_) {}
   }
 
-  // 2. Browser-Fallback via r.jina.ai (jetzt auch für eigene Händler wie V-Markt, dm, Rossmann!)
-  try {
-    const fallbackSlug = b.kaufdaSlug || String(b.label || b.id || '').replace(/[^a-zA-Z0-9äöüÄÖÜß]+/g, '-');
-    const discoveryUrl = b.meinprospektUrl || b.cityUrl || (fallbackSlug ? `https://www.kaufda.de/Geschaefte/${encodeURIComponent(fallbackSlug)}` : '');
-    if (discoveryUrl) {
+  // 2. Mehrstufiger Browser-Fallback via r.jina.ai (entdeckt aktuelle KW contentId + Titelbild für V-Markt, REWE & alle Händler!)
+  const discoveryUrls = [
+    cityUrl,
+    meinprospektUrl,
+    fallbackSlug ? `https://www.kaufda.de/Geschaefte/${encodeURIComponent(fallbackSlug)}` : ''
+  ].filter(Boolean);
+
+  for (const discoveryUrl of discoveryUrls) {
+    try {
       const jinaRes = await fetch(`https://r.jina.ai/${discoveryUrl}`, {
         headers: { Accept: 'application/json' }
       });
-      if (jinaRes.ok) {
-        const jinaJson = await jinaRes.json();
-        const text = jinaJson?.data?.content || '';
-        const matches = [...text.matchAll(/contentViewer\/static\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)];
-        if (matches.length > 0) {
-          const foundCid = matches[0][1];
-          if (foundCid && foundCid !== b.contentId) {
-            b.contentId = foundCid;
-            const directViewer = `https://www.kaufda.de/contentViewer/static/${foundCid}?page=1`;
-            b.kaufdaUrl = directViewer;
-            b.brochureUrl = directViewer;
-            return true;
+      if (!jinaRes.ok) continue;
+      const jinaJson = await jinaRes.json();
+      const text = jinaJson?.data?.content || '';
+      const cidMatches = [
+        ...text.matchAll(/contentViewer\/static\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi),
+        ...text.matchAll(/brochures\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)
+      ];
+      const coverImgMatch = text.match(/https:\/\/content-media\.bonial\.biz\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/[^\s)"']+/i);
+
+      if (cidMatches.length > 0 || coverImgMatch) {
+        if (cidMatches.length > 0 && cidMatches[0][1]) {
+          const foundCid = cidMatches[0][1];
+          b.contentId = foundCid;
+          const directViewer = `https://www.kaufda.de/contentViewer/static/${foundCid}?page=1`;
+          b.kaufdaUrl = directViewer;
+          b.brochureUrl = directViewer;
+        }
+        if (coverImgMatch && coverImgMatch[0]) {
+          const baseCover = coverImgMatch[0].split('?')[0];
+          b.coverUrl = `${baseCover}?impolicy=large`;
+          b.highResCoverUrl = `${baseCover}?impolicy=zoomlarge`;
+          if (!Array.isArray(b.pageUuids) || b.pageUuids.length === 0) {
+            b.pageUuids = [coverImgMatch[1]];
           }
         }
+        persistUpdatedBrochure();
+        return true;
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
 
   return false;
 }
@@ -10894,10 +12107,20 @@ Antworte NUR als JSON:
   }
 }
 
-// 2) TAB WOCHE: ✨ KI-Wochenplan (Mo–So)
+// 2) TAB WOCHE: ✨ KI-Wochenplan (nur ausgewählte Wochentage planen!)
 async function generateAiWeekPlan() {
-  if (!state.recipes || state.recipes.length < 3) {
-    showToast('Bitte speichere zuerst mindestens 3 Rezepte in deiner Sammlung.');
+  if (!state.recipes || state.recipes.length < 2) {
+    showToast('Bitte speichere zuerst mindestens 2 Rezepte in deiner Sammlung.');
+    return;
+  }
+
+  const allDays = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  const selectedDays = Array.isArray(state.aiSelectedDays)
+    ? allDays.filter((d) => state.aiSelectedDays.includes(d))
+    : [...allDays];
+
+  if (selectedDays.length === 0) {
+    showToast('Bitte wähle oben mindestens einen Wochentag aus, den die KI planen soll.');
     return;
   }
 
@@ -10905,8 +12128,13 @@ async function generateAiWeekPlan() {
   const hintEl = document.getElementById('aiWeekPlanHint');
   if (btn) {
     btn.disabled = true;
-    btn.textContent = '✨ KI plant Woche...';
+    btn.textContent = `✨ KI plant ${selectedDays.length} ${selectedDays.length === 1 ? 'Tag' : 'Tage'}...`;
   }
+
+  // Bereits fest eingeplante Gerichte an den NICHT ausgewählten Tagen vermeiden
+  const alreadyPlannedOnOtherDays = allDays
+    .filter((d) => !selectedDays.includes(d) && state.weekPlan[d])
+    .map((d) => state.weekPlan[d]);
 
   const recipeSummary = state.recipes.slice(0, 45).map((r) => ({
     id: r.id,
@@ -10914,39 +12142,38 @@ async function generateAiWeekPlan() {
     category: r.category,
     prepTime: r.prepTime || 25
   }));
-  const offerSummary = (state.offers || []).slice(0, 15).map((o) => `${o.title} (${o.price} bei ${o.retailer})`);
+  const activeOffers = (state.offers || []).filter((o) =>
+    typeof isRetailerCurrentlyEnabled === 'function' ? isRetailerCurrentlyEnabled(o.retailer) : true
+  );
+  const offerSummary = activeOffers.slice(0, 15).map((o) => `${o.title} (${o.price} bei ${o.retailer})`);
 
-  const res = await callActiveAiJson(`Stelle einen abwechslungsreichen Familien-Wochenplan (Montag bis Sonntag) AUSSCHLIESSLICH aus diesen vorhandenen Rezept-IDs zusammen.
+  const dayFieldsSchema = selectedDays.map((d) => `  "${d}": "rec-id"`).join(',\n');
+
+  const res = await callActiveAiJson(`Stelle einen abwechslungsreichen Familien-Wochenplan NUR für diese ausgewählten Wochentage zusammen: ${selectedDays.join(', ')}.
+Nutze AUSSCHLIESSLICH diese vorhandenen Rezept-IDs (keine Dopplungen innerhalb der Woche; vermeide wenn möglich bereits an anderen Tagen geplante IDs: ${JSON.stringify(alreadyPlannedOnOtherDays)}).
 Achte auf Abwechslung (unter der Woche eher schnell ≤35 Min, am Wochenende gern aufwändiger, guter Mix aus Kategorien) und nutze wenn passend günstige Wochenangebote.
 Rezepte: ${JSON.stringify(recipeSummary)}
 Aktuelle Angebote: ${JSON.stringify(offerSummary)}
 
 Antworte NUR als JSON:
 {
-  "Montag": "rec-id",
-  "Dienstag": "rec-id",
-  "Mittwoch": "rec-id",
-  "Donnerstag": "rec-id",
-  "Freitag": "rec-id",
-  "Samstag": "rec-id",
-  "Sonntag": "rec-id",
+${dayFieldsSchema},
   "note": "Kurze Begründung in 1 Satz auf Deutsch"
 }`);
 
   if (btn) {
     btn.disabled = false;
-    btn.textContent = '✨ KI-Wochenplan (Mo–So)';
   }
+  renderAiWeekPlanDayChips();
 
   if (!res.ok || !res.data) {
     showToast(`❌ KI-Wochenplan Fehler: ${res.error || 'Unbekannt'}`);
     return;
   }
 
-  const days = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
   const validIds = new Set(state.recipes.map((r) => r.id));
   let assigned = 0;
-  days.forEach((day) => {
+  selectedDays.forEach((day) => {
     const pickedId = res.data[day];
     if (pickedId && validIds.has(pickedId)) {
       state.weekPlan[day] = pickedId;
@@ -10965,14 +12192,14 @@ Antworte NUR als JSON:
   broadcastSyncUpdate();
   if (hintEl && res.data.note) {
     hintEl.style.display = 'block';
-    hintEl.textContent = `✨ KI-Plan: ${res.data.note}`;
+    hintEl.textContent = `✨ KI-Plan (${selectedDays.map((d) => PLANNER_DAY_SHORT_LABELS[d] || d).join(', ')}): ${res.data.note}`;
   }
-  showToast(`✨ KI-Wochenplan für ${assigned} Tage erstellt & synchronisiert!`);
+  showToast(`✨ KI-Wochenplan für ${assigned} ${assigned === 1 ? 'Tag' : 'Tage'} erstellt & synchronisiert!`);
 }
 
-// 3) TAB ANGEBOTE: 🍳 KI-Sparrezept aus aktuellen Bobinger Angeboten
+// 3) TAB ANGEBOTE: 🍳 KI-Sparrezept aus aktuellen Bobinger Angeboten (nur aktive Händler!)
 async function generateAiOfferRecipe() {
-  const offersList = (state.offers || []).slice(0, 22);
+  const offersList = (state.offers || []).filter((o) => isRetailerCurrentlyEnabled(o.retailer)).slice(0, 22);
   if (offersList.length === 0) {
     showToast('Keine Angebote geladen – bitte zuerst auf 🔄 Live tippen.');
     return;
@@ -11231,17 +12458,135 @@ async function saveEditedRecipe(recipeId) {
   showToast(`✅ "${updated.title}" gespeichert & synchronisiert!`);
 }
 
-// Erweiterter Katalog zusätzlicher deutscher Händler (jederzeit per Suche aktivierbar/entfernbar)
+// Erweiterter Katalog zusätzlicher deutscher Händler (inkl. V-Markt für 86399 Bobingen / Augsburg!)
 const EXTRA_RETAILERS_CATALOG = [
-  { id: 'V-Markt', label: 'V-Markt', kaufdaSlug: 'V-Markt', brochureTitle: 'V-Markt Wochenprospekt', color: '#dc2626', validity: 'Do – Mi' },
-  { id: 'dm', label: 'dm-drogerie markt', kaufdaSlug: 'dm-drogerie-markt', brochureTitle: 'dm Aktuelle Angebote', color: '#1d4ed8', validity: 'Mo – Sa' },
-  { id: 'Rossmann', label: 'ROSSMANN', kaufdaSlug: 'Rossmann', brochureTitle: 'ROSSMANN Ideenwelt & Angebote', color: '#dc2626', validity: 'Mo – Fr' },
-  { id: 'Mueller', label: 'Müller', kaufdaSlug: 'Mueller', brochureTitle: 'Müller Drogerie Prospekt', color: '#ea580c', validity: 'Mo – Sa' },
-  { id: 'Marktkauf', label: 'Marktkauf', kaufdaSlug: 'Marktkauf', brochureTitle: 'Marktkauf Wochenprospekt', color: '#dc2626', validity: 'Mo – Sa' },
-  { id: 'Alnatura', label: 'Alnatura', kaufdaSlug: 'Alnatura', brochureTitle: 'Alnatura Bio-Angebote', color: '#15803d', validity: 'Mo – Sa' },
-  { id: 'Denns', label: 'Denns BioMarkt', kaufdaSlug: 'Denns-BioMarkt', brochureTitle: 'Denns BioMarkt Prospekt', color: '#16a34a', validity: 'Mi – Di' },
-  { id: 'Action', label: 'Action', kaufdaSlug: 'Action', brochureTitle: 'Action Wochenangebote', color: '#2563eb', validity: 'Mi – Di' },
-  { id: 'OBI', label: 'OBI', kaufdaSlug: 'OBI', brochureTitle: 'OBI Baumarkt Prospekt', color: '#f97316', validity: 'Mo – Sa' }
+  {
+    id: 'V-Markt',
+    badgeClass: 'REWE',
+    icon: '🇻',
+    label: 'V-Markt',
+    slug: 'v-markt',
+    kaufdaSlug: 'V-Markt',
+    cityUrl: 'https://www.kaufda.de/Augsburg/V-Markt',
+    meinprospektUrl: 'https://www.meinprospekt.de/v-markt',
+    officialBrochureUrl: 'https://www.v-markt.de/angebote',
+    brochureTitle: 'V-Markt Wochenprospekt',
+    pages: 'Aktuelle KW',
+    color: '#dc2626',
+    validity: 'Do – Mi'
+  },
+  {
+    id: 'dm',
+    badgeClass: 'EDEKA',
+    icon: '💧',
+    label: 'dm-drogerie markt',
+    slug: 'dm-de',
+    kaufdaSlug: 'dm-drogerie-markt',
+    cityUrl: 'https://www.kaufda.de/Augsburg/dm-drogerie-markt',
+    meinprospektUrl: 'https://www.meinprospekt.de/dm-de',
+    brochureTitle: 'dm Aktuelle Angebote',
+    pages: 'Aktuelle KW',
+    color: '#1d4ed8',
+    validity: 'Mo – Sa'
+  },
+  {
+    id: 'Rossmann',
+    badgeClass: 'REWE',
+    icon: '🐎',
+    label: 'ROSSMANN',
+    slug: 'rossmann-de',
+    kaufdaSlug: 'Rossmann',
+    cityUrl: 'https://www.kaufda.de/Augsburg/Rossmann',
+    meinprospektUrl: 'https://www.meinprospekt.de/rossmann-de',
+    brochureTitle: 'ROSSMANN Ideenwelt & Angebote',
+    pages: 'Aktuelle KW',
+    color: '#dc2626',
+    validity: 'Mo – Fr'
+  },
+  {
+    id: 'Mueller',
+    badgeClass: 'ALDI_Sued',
+    icon: '🧡',
+    label: 'Müller',
+    slug: 'mueller',
+    kaufdaSlug: 'Mueller',
+    cityUrl: 'https://www.kaufda.de/Augsburg/Mueller',
+    meinprospektUrl: 'https://www.meinprospekt.de/mueller',
+    brochureTitle: 'Müller Drogerie Prospekt',
+    pages: 'Aktuelle KW',
+    color: '#ea580c',
+    validity: 'Mo – Sa'
+  },
+  {
+    id: 'Marktkauf',
+    badgeClass: 'REWE',
+    icon: '🛒',
+    label: 'Marktkauf',
+    slug: 'marktkauf',
+    kaufdaSlug: 'Marktkauf',
+    cityUrl: 'https://www.kaufda.de/Augsburg/Marktkauf',
+    meinprospektUrl: 'https://www.meinprospekt.de/marktkauf',
+    brochureTitle: 'Marktkauf Wochenprospekt',
+    pages: 'Aktuelle KW',
+    color: '#dc2626',
+    validity: 'Mo – Sa'
+  },
+  {
+    id: 'Alnatura',
+    badgeClass: 'Globus',
+    icon: '🌱',
+    label: 'Alnatura',
+    slug: 'alnatura',
+    kaufdaSlug: 'Alnatura',
+    cityUrl: 'https://www.kaufda.de/Augsburg/Alnatura',
+    meinprospektUrl: 'https://www.meinprospekt.de/alnatura',
+    brochureTitle: 'Alnatura Bio-Angebote',
+    pages: 'Aktuelle KW',
+    color: '#15803d',
+    validity: 'Mo – Sa'
+  },
+  {
+    id: 'Denns',
+    badgeClass: 'Globus',
+    icon: '🥬',
+    label: 'Denns BioMarkt',
+    slug: 'denns-biomarkt',
+    kaufdaSlug: 'Denns-BioMarkt',
+    cityUrl: 'https://www.kaufda.de/Augsburg/Denns-BioMarkt',
+    meinprospektUrl: 'https://www.meinprospekt.de/denns-biomarkt',
+    brochureTitle: 'Denns BioMarkt Prospekt',
+    pages: 'Aktuelle KW',
+    color: '#16a34a',
+    validity: 'Mi – Di'
+  },
+  {
+    id: 'Action',
+    badgeClass: 'Lidl',
+    icon: '⚡',
+    label: 'Action',
+    slug: 'action-de',
+    kaufdaSlug: 'Action',
+    cityUrl: 'https://www.kaufda.de/Augsburg/Action',
+    meinprospektUrl: 'https://www.meinprospekt.de/action-de',
+    brochureTitle: 'Action Wochenangebote',
+    pages: 'Aktuelle KW',
+    color: '#2563eb',
+    validity: 'Mi – Di'
+  },
+  {
+    id: 'OBI',
+    badgeClass: 'Norma',
+    icon: '🔨',
+    label: 'OBI',
+    slug: 'obi',
+    kaufdaSlug: 'OBI',
+    cityUrl: 'https://www.kaufda.de/Augsburg/OBI',
+    meinprospektUrl: 'https://www.meinprospekt.de/obi',
+    brochureTitle: 'OBI Baumarkt Prospekt',
+    pages: 'Aktuelle KW',
+    color: '#f97316',
+    validity: 'Mo – Sa'
+  }
 ];
 
 function getCustomUserRetailers() {
@@ -11261,11 +12606,15 @@ function getAllAvailableRetailersMeta() {
   extras.forEach((ex) => {
     if (ex && ex.id && !existingIds.has(ex.id)) {
       existingIds.add(ex.id);
+      const defaultBrochureLink =
+        ex.cityUrl || `https://www.kaufda.de/Geschaefte/${encodeURIComponent(ex.kaufdaSlug || ex.id)}`;
       base.push({
         ...ex,
+        badgeClass: ex.badgeClass || 'REWE',
+        pages: ex.pages || 'Aktuelle KW',
         coverUrl: ex.coverUrl || 'https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=400&q=80',
-        brochureUrl: `https://www.kaufda.de/Geschaefte/${encodeURIComponent(ex.kaufdaSlug || ex.id)}`,
-        kaufdaUrl: `https://www.kaufda.de/Geschaefte/${encodeURIComponent(ex.kaufdaSlug || ex.id)}`
+        brochureUrl: ex.brochureUrl || defaultBrochureLink,
+        kaufdaUrl: ex.kaufdaUrl || defaultBrochureLink
       });
     }
   });
@@ -11285,18 +12634,30 @@ function getAllMergedBrochuresList() {
 
 function getEnabledRetailerIds() {
   try {
-    const raw = localStorage.getItem('kt_enabled_retailers_v33');
-    if (raw) {
-      const arr = JSON.parse(raw);
+    const v45Raw = localStorage.getItem('kt_enabled_retailers_v45');
+    if (v45Raw) {
+      const arr = JSON.parse(v45Raw);
       if (Array.isArray(arr) && arr.length > 0) return new Set(arr);
     }
+    // Einmalige Migration von v33 -> v45: V-Markt automatisch für Bobingen/Augsburg freischalten!
+    const legacyRaw = localStorage.getItem('kt_enabled_retailers_v33');
+    if (legacyRaw) {
+      const legacyArr = JSON.parse(legacyRaw);
+      if (Array.isArray(legacyArr) && legacyArr.length > 0) {
+        if (!legacyArr.includes('V-Markt')) legacyArr.push('V-Markt');
+        localStorage.setItem('kt_enabled_retailers_v45', JSON.stringify(legacyArr));
+        return new Set(legacyArr);
+      }
+    }
   } catch (_) {}
-  return new Set(ALL_RETAILERS_META.map((r) => r.id));
+  return new Set([...ALL_RETAILERS_META.map((r) => r.id), 'V-Markt']);
 }
 
 function saveEnabledRetailerIds(idSet) {
   try {
-    localStorage.setItem('kt_enabled_retailers_v33', JSON.stringify(Array.from(idSet)));
+    const serialized = JSON.stringify(Array.from(idSet));
+    localStorage.setItem('kt_enabled_retailers_v45', serialized);
+    localStorage.setItem('kt_enabled_retailers_v33', serialized);
   } catch (_) {}
 }
 
@@ -11348,6 +12709,14 @@ function toggleRetailerEnabled(retailerId) {
   renderRetailerManagerList();
   renderBrochuresCarousel();
   renderOffersTab();
+  renderShoppingList();
+  renderWeekPlan();
+  renderRecipes();
+  showToast(
+    newlyEnabled
+      ? `✅ Händler "${retailerId}" aktiviert – Angebote & Prospekt werden angezeigt!`
+      : `🚫 Händler "${retailerId}" entfernt – keine Angebote mehr sichtbar bis zum Wiederhinzufügen.`
+  );
 
   if (newlyEnabled && typeof fetchLiveBrochureForRetailer === 'function') {
     const meta = getAllAvailableRetailersMeta().find((m) => m.id === retailerId);
@@ -11619,6 +12988,8 @@ async function fetchAndParseSingleRecipeSilent(url) {
         const jinaJson = await jinaRes.json();
         const data = jinaJson.data || {};
         const combinedText = (data.title ? `Title: ${data.title}\n` : '') + (data.content || '');
+        const jinaDishImg = extractBestImageFromMarkdownOrJina(data, combinedText, url);
+        if (jinaDishImg && !bestCoverImage) bestCoverImage = jinaDishImg;
         let extracted = null;
         if (state.household.geminiKey && combinedText.length > 60) {
           const aiRes = await extractRecipeWithGeminiAI(combinedText, url);
@@ -11633,7 +13004,11 @@ async function fetchAndParseSingleRecipeSilent(url) {
             title: extracted.title || data.title || 'Importiertes Rezept',
             description: extracted.description || bestMetaDesc || '',
             sourceUrl: data.url || url,
-            imageUrl: bestCoverImage || parsed?.imageUrl || 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80',
+            imageUrl:
+              bestCoverImage ||
+              (isLikelyDishImageUrl(extracted.imageUrl) ? extracted.imageUrl : '') ||
+              parsed?.imageUrl ||
+              'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80',
             tags: ['Lesezeichen', hostTag]
           };
         }
